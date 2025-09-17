@@ -1,0 +1,7 @@
+p, role_admin, /admin/*, (GET|POST|PUT|DELETE)
+p, role_admin, /auth/*, (GET|POST|PUT|DELETE)
+p, role_attendant, /auth/me, GET
+p, role_attendant, /v1/clients/*, (GET|PUT)
+p, role_user, /auth/me, GET
+p, role_user, /auth/otp/*, (POST)
+p, role_owner, /users/:user_id, (GET|PUT)

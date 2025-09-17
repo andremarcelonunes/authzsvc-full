@@ -1,0 +1,20 @@
+ownershipRules:
+  - method: "GET"
+    path: "/users/:user_id"
+    source: "path"
+    paramName: "user_id"
+
+  - method: "PUT"
+    path: "/users/:user_id"
+    source: "path"
+    paramName: "user_id"
+
+  - method: "POST"
+    path: "/some/data"
+    source: "body"
+    paramName: "identity_id"
+
+  - method: "GET"
+    path: "/some/other/data"
+    source: "query"
+    paramName: "user_id"

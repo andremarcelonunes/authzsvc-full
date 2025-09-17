@@ -1,0 +1,152 @@
+validationRules:
+  # Example 1: Ensure x-user-id header matches JWT user_id (enhanced version of current logic)
+  - name: "UserIDHeaderMatch"
+    method: "GET"
+    path: "/users/:user_id"
+    description: "Ensures x-user-id header matches the user_id from JWT token"
+    logic: "all"
+    enabled: true
+    conditions:
+      - requestField:
+          source: "header"
+          name: "x-user-id"
+        tokenField:
+          source: "token"
+          name: "user_id"
+        operator: "equals"
+        description: "Header user ID must match token user ID"
+
+  # Example 2: User can only access their own profile via path parameter
+  - name: "UserProfileOwnership"
+    method: "GET"
+    path: "/users/:user_id/profile"
+    description: "Users can only access their own profile"
+    logic: "all"
+    enabled: true
+    conditions:
+      - requestField:
+          source: "path"
+          name: "user_id"
+        tokenField:
+          source: "token"
+          name: "user_id"
+        operator: "equals"
+        description: "Path user_id must match token user_id"
+
+  # Example 3: Multi-tenant application - tenant_id in body must match JWT claim
+  - name: "TenantConsistencyCheck"
+    method: "POST"
+    path: "/projects"
+    description: "Project creation must be within user's tenant"
+    logic: "all"
+    enabled: true
+    conditions:
+      - requestField:
+          source: "body"
+          name: "tenant_id"
+        tokenField:
+          source: "token"
+          name: "tenant_id"
+        operator: "equals"
+        description: "Request tenant must match user's tenant"
+
+  # Example 4: Project access control - user must have access to requested project
+  - name: "ProjectAccessCheck"
+    method: "GET"
+    path: "/projects/:project_id"
+    description: "User must have access to the requested project"
+    logic: "all"
+    enabled: true
+    conditions:
+      - requestField:
+          source: "path"
+          name: "project_id"
+        tokenField:
+          source: "token"
+          name: "project_ids"
+        operator: "in"
+        description: "Project ID must be in user's allowed projects list"
+
+  # Example 5: Complex validation with multiple conditions (AND logic)
+  - name: "TeamResourceAccess"
+    method: "PUT"
+    path: "/teams/:team_id/resources"
+    description: "User must be team member and operation must be within their org"
+    logic: "all"
+    enabled: true
+    conditions:
+      - requestField:
+          source: "path"
+          name: "team_id"
+        tokenField:
+          source: "token"
+          name: "team_ids"
+        operator: "in"
+        description: "User must be member of the team"
+      - requestField:
+          source: "body"
+          name: "organization_id"
+        tokenField:
+          source: "token"
+          name: "organization_id"
+        operator: "equals"
+        description: "Resource must belong to user's organization"
+
+  # Example 6: Flexible validation with OR logic
+  - name: "AdminOrOwnerAccess"
+    method: "DELETE"
+    path: "/documents/:doc_id"
+    description: "User must be admin OR document owner"
+    logic: "any"
+    enabled: true
+    conditions:
+      - requestField:
+          source: "token"
+          name: "role"
+        tokenField:
+          source: "token"
+          name: "admin_role"
+        operator: "equals"
+        description: "User has admin role"
+      - requestField:
+          source: "query"
+          name: "owner_id"
+        tokenField:
+          source: "token"
+          name: "user_id"
+        operator: "equals"
+        description: "User owns the document"
+
+  # Example 7: Query parameter validation
+  - name: "FilterByUserData"
+    method: "GET"
+    path: "/analytics/reports"
+    description: "Users can only filter by their own data"
+    logic: "all"
+    enabled: true
+    conditions:
+      - requestField:
+          source: "query"
+          name: "user_filter"
+        tokenField:
+          source: "token"
+          name: "user_id"
+        operator: "equals"
+        description: "Filter must be for user's own data"
+
+  # Example 8: Nested body field validation
+  - name: "NestedFieldValidation"
+    method: "POST"
+    path: "/orders"
+    description: "Order must be created for user's customer ID"
+    logic: "all"
+    enabled: true
+    conditions:
+      - requestField:
+          source: "body"
+          name: "customer.id"
+        tokenField:
+          source: "token"
+          name: "customer_id"
+        operator: "equals"
+        description: "Order customer must match user's customer"
