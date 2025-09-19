@@ -1,0 +1,160 @@
+# Envoy Proxy Configuration for External Authorization Integration
+# This configuration demonstrates how to integrate Envoy with the authzsvc external authorization service
+#
+# Usage:
+#   envoy -c envoy-external-authz.yaml
+#
+# Architecture:
+#   Client -> Envoy Proxy -> External Auth Service (authzsvc) -> Backend Service
+#
+# The external auth service will validate JWT tokens and enforce Casbin policies
+# before allowing requests to reach your backend services.
+
+static_resources:
+  listeners:
+  - name: main_listener
+    address:
+      socket_address:
+        protocol: TCP
+        address: 0.0.0.0
+        port_value: 8000  # Envoy will listen on port 8000
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: main
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: local_service
+              domains: ["*"]
+              routes:
+              # Route for health checks (bypass auth)
+              - match:
+                  prefix: "/health"
+                route:
+                  cluster: backend_service
+              # Route for authentication endpoints (bypass auth)
+              - match:
+                  prefix: "/auth/register"
+                route:
+                  cluster: backend_service
+              - match:
+                  prefix: "/auth/login"
+                route:
+                  cluster: backend_service
+              - match:
+                  prefix: "/auth/otp"
+                route:
+                  cluster: backend_service
+              - match:
+                  prefix: "/auth/refresh"
+                route:
+                  cluster: backend_service
+              # All other routes require authorization
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: backend_service
+          http_filters:
+          # External Authorization Filter
+          - name: envoy.filters.http.ext_authz
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+              transport_api_version: V3
+              http_service:
+                server_uri:
+                  uri: "http://authzsvc:8080"  # Your authzsvc service
+                  cluster: authz_service
+                  timeout: 5s
+                path_prefix: "/external/authz"
+                authorization_request:
+                  # Include original request headers
+                  allowed_headers:
+                    patterns:
+                    - exact: "authorization"
+                    - exact: "content-type"
+                    - exact: "x-forwarded-for"
+                    - exact: "x-request-id"
+                    - prefix: "x-"
+                  # Include original request body for POST/PUT requests
+                  pack_as_bytes: true
+                authorization_response:
+                  # Forward response headers from auth service to backend
+                  allowed_upstream_headers:
+                    patterns:
+                    - exact: "x-user-id"
+                    - exact: "x-user-role"
+                    - prefix: "x-auth-"
+                  # Forward headers to client
+                  allowed_client_headers:
+                    patterns:
+                    - exact: "set-cookie"
+                failure_mode_allow: false  # Deny requests if auth service is down
+              with_request_body:
+                max_request_bytes: 8192  # Max body size to send to auth service
+                allow_partial_message: true
+          # Router filter (must be last)
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+  # Your backend service cluster
+  - name: backend_service
+    connect_timeout: 30s
+    type: LOGICAL_DNS
+    dns_lookup_family: V4_ONLY
+    load_assignment:
+      cluster_name: backend_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: authzsvc  # Your backend service
+                port_value: 8080
+    health_checks:
+    - timeout: 5s
+      interval: 10s
+      healthy_threshold: 2
+      unhealthy_threshold: 3
+      http_health_check:
+        path: "/health"
+        expected_statuses:
+        - start: 200
+          end: 299
+
+  # External authorization service cluster
+  - name: authz_service
+    connect_timeout: 5s
+    type: LOGICAL_DNS
+    dns_lookup_family: V4_ONLY
+    load_assignment:
+      cluster_name: authz_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: authzsvc  # Your authzsvc service
+                port_value: 8080
+    health_checks:
+    - timeout: 3s
+      interval: 10s
+      healthy_threshold: 2
+      unhealthy_threshold: 2
+      http_health_check:
+        path: "/external/health"
+        expected_statuses:
+        - start: 200
+          end: 299
+
+# Admin interface for Envoy management
+admin:
+  address:
+    socket_address:
+      protocol: TCP
+      address: 0.0.0.0
+      port_value: 8001
