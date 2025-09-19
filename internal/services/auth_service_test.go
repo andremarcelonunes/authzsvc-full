@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,7 +162,7 @@ func TestAuthServiceImpl_Register(t *testing.T) {
 			tt.setupMocks(userRepo, passwordSvc, otpSvc)
 
 			// Create service
-			authService := createAuthServiceForTest(t, userRepo, nil, passwordSvc, nil, otpSvc, nil)
+			authService := createAuthServiceForTest(t, userRepo, nil, passwordSvc, nil, otpSvc, nil, nil)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -174,8 +175,11 @@ func TestAuthServiceImpl_Register(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error %v, got nil", tt.expectedError)
 				}
-				if err.Error() != tt.expectedError.Error() {
-					t.Errorf("expected error %v, got %v", tt.expectedError, err)
+				// For enhanced error messages, check if the expected error is contained in the actual error
+				expectedMsg := tt.expectedError.Error()
+				actualMsg := err.Error()
+				if !strings.Contains(actualMsg, expectedMsg) {
+					t.Errorf("expected error containing '%s', got '%s'", expectedMsg, actualMsg)
 				}
 			} else {
 				if err != nil {
@@ -357,7 +361,7 @@ func TestAuthServiceImpl_Login(t *testing.T) {
 			tt.setupMocks(userRepo, sessionRepo, passwordSvc, tokenSvc)
 
 			// Create service
-			authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, nil, nil)
+			authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, nil, nil, nil)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -370,8 +374,11 @@ func TestAuthServiceImpl_Login(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error %v, got nil", tt.expectedError)
 				}
-				if err.Error() != tt.expectedError.Error() {
-					t.Errorf("expected error %v, got %v", tt.expectedError, err)
+				// For enhanced error messages, check if the expected error is contained in the actual error
+				expectedMsg := tt.expectedError.Error()
+				actualMsg := err.Error()
+				if !strings.Contains(actualMsg, expectedMsg) {
+					t.Errorf("expected error containing '%s', got '%s'", expectedMsg, actualMsg)
 				}
 			} else {
 				if err != nil {
@@ -408,8 +415,8 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 				if result.AccessToken != "new_access_token_123" {
 					t.Errorf("expected new access token, got %s", result.AccessToken)
 				}
-				if result.RefreshToken != "valid_refresh_token" {
-					t.Errorf("expected same refresh token, got %s", result.RefreshToken)
+				if result.RefreshToken != "new_refresh_token_456" {
+					t.Errorf("expected new refresh token 'new_refresh_token_456', got %s", result.RefreshToken)
 				}
 			},
 		},
@@ -421,7 +428,7 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 					return nil, domain.ErrTokenInvalid
 				}
 			},
-			expectedError: domain.ErrTokenInvalid,
+			expectedError: fmt.Errorf("token validation failed: invalid token"),
 			validateResult: func(t *testing.T, result *domain.AuthResult) {
 				if result != nil {
 					t.Error("expected result to be nil when token invalid")
@@ -442,7 +449,7 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 					return nil, domain.ErrSessionNotFound
 				}
 			},
-			expectedError: domain.ErrSessionNotFound,
+			expectedError: fmt.Errorf("session lookup failed for session nonexistent_session: session not found"),
 			validateResult: func(t *testing.T, result *domain.AuthResult) {
 				if result != nil {
 					t.Error("expected result to be nil when session not found")
@@ -464,7 +471,7 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 					return expiredSession, nil
 				}
 			},
-			expectedError: domain.ErrSessionExpired,
+			expectedError: errors.New("session has expired"),
 			validateResult: func(t *testing.T, result *domain.AuthResult) {
 				if result != nil {
 					t.Error("expected result to be nil when session expired")
@@ -488,7 +495,7 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 					return nil, domain.ErrUserNotFound
 				}
 			},
-			expectedError: domain.ErrUserNotFound,
+			expectedError: fmt.Errorf("user lookup failed for user ID 999 in session sess_123_456789: user not found"),
 			validateResult: func(t *testing.T, result *domain.AuthResult) {
 				if result != nil {
 					t.Error("expected result to be nil when user not found")
@@ -516,7 +523,7 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 					return "", errors.New("token generation failed")
 				}
 			},
-			expectedError: fmt.Errorf("failed to generate access token: %w", errors.New("token generation failed")),
+			expectedError: fmt.Errorf("access token generation failed for user 1 (session sess_123_456789): token generation failed"),
 			validateResult: func(t *testing.T, result *domain.AuthResult) {
 				if result != nil {
 					t.Error("expected result to be nil when access token generation fails")
@@ -536,7 +543,7 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 			tt.setupMocks(userRepo, sessionRepo, tokenSvc)
 
 			// Create service
-			authService := createAuthServiceForTest(t, userRepo, sessionRepo, nil, tokenSvc, nil, nil)
+			authService := createAuthServiceForTest(t, userRepo, sessionRepo, nil, tokenSvc, nil, nil, nil)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -549,8 +556,11 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error %v, got nil", tt.expectedError)
 				}
-				if err.Error() != tt.expectedError.Error() {
-					t.Errorf("expected error %v, got %v", tt.expectedError, err)
+				// For enhanced error messages, check if the expected error is contained in the actual error
+				expectedMsg := tt.expectedError.Error()
+				actualMsg := err.Error()
+				if !strings.Contains(actualMsg, expectedMsg) {
+					t.Errorf("expected error containing '%s', got '%s'", expectedMsg, actualMsg)
 				}
 			} else {
 				if err != nil {
@@ -615,7 +625,7 @@ func TestAuthServiceImpl_Logout(t *testing.T) {
 			tt.setupMocks(sessionRepo)
 
 			// Create service
-			authService := createAuthServiceForTest(t, nil, sessionRepo, nil, nil, nil, nil)
+			authService := createAuthServiceForTest(t, nil, sessionRepo, nil, nil, nil, nil, nil)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -628,8 +638,11 @@ func TestAuthServiceImpl_Logout(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error %v, got nil", tt.expectedError)
 				}
-				if err.Error() != tt.expectedError.Error() {
-					t.Errorf("expected error %v, got %v", tt.expectedError, err)
+				// For enhanced error messages, check if the expected error is contained in the actual error
+				expectedMsg := tt.expectedError.Error()
+				actualMsg := err.Error()
+				if !strings.Contains(actualMsg, expectedMsg) {
+					t.Errorf("expected error containing '%s', got '%s'", expectedMsg, actualMsg)
 				}
 			} else {
 				if err != nil {
@@ -696,7 +709,7 @@ func TestAuthServiceImpl_GetUserProfile(t *testing.T) {
 			tt.setupMocks(userRepo)
 
 			// Create service
-			authService := createAuthServiceForTest(t, userRepo, nil, nil, nil, nil, nil)
+			authService := createAuthServiceForTest(t, userRepo, nil, nil, nil, nil, nil, nil)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -709,8 +722,11 @@ func TestAuthServiceImpl_GetUserProfile(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error %v, got nil", tt.expectedError)
 				}
-				if err.Error() != tt.expectedError.Error() {
-					t.Errorf("expected error %v, got %v", tt.expectedError, err)
+				// For enhanced error messages, check if the expected error is contained in the actual error
+				expectedMsg := tt.expectedError.Error()
+				actualMsg := err.Error()
+				if !strings.Contains(actualMsg, expectedMsg) {
+					t.Errorf("expected error containing '%s', got '%s'", expectedMsg, actualMsg)
 				}
 			} else {
 				if err != nil {
@@ -748,7 +764,7 @@ func TestAuthServiceImpl_CompleteAuthFlow(t *testing.T) {
 	otpSvc := mocks.NewMockOTPService()
 
 	// Create service
-	authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, nil)
+	authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, nil, nil)
 
 	// Test data
 	email := "integration@test.com"

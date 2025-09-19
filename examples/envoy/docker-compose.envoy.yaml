@@ -1,0 +1,117 @@
+# Docker Compose for Envoy + External Authorization Demo
+# This setup demonstrates a complete Envoy proxy + authzsvc integration
+#
+# Usage:
+#   docker-compose -f docker-compose.envoy.yaml up --build
+#
+# Architecture:
+#   Client -> Envoy (port 8000) -> External Auth (authzsvc:8080) -> Backend (authzsvc:8080)
+#
+# Access:
+#   - Envoy proxy: http://localhost:8000
+#   - Envoy admin: http://localhost:8001
+#   - Direct authzsvc: http://localhost:8080 (for testing)
+
+version: '3.8'
+
+services:
+  # PostgreSQL database
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: authzdb
+      POSTGRES_USER: authzuser
+      POSTGRES_PASSWORD: authzpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - authz_network
+
+  # Redis for sessions and OTP
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - authz_network
+
+  # Authentication & Authorization Service
+  authzsvc:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      # Database
+      DATABASE_DSN: "postgres://authzuser:authzpass@db:5432/authzdb?sslmode=disable"
+      
+      # Redis
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+      
+      # JWT Configuration
+      JWT_SECRET: "your-super-secret-jwt-key-change-in-production"
+      JWT_ISSUER: "authzsvc"
+      JWT_ACCESS_TTL: "900s"     # 15 minutes
+      JWT_REFRESH_TTL: "168h"    # 7 days
+      
+      # OTP Configuration
+      OTP_LENGTH: 6
+      OTP_TTL: "5m"
+      OTP_MAX_ATTEMPTS: 5
+      OTP_RESEND_WINDOW: "1m"
+      
+      # Twilio (configure with your credentials)
+      TWILIO_ACCOUNT_SID: "your_twilio_account_sid"
+      TWILIO_AUTH_TOKEN: "your_twilio_auth_token" 
+      TWILIO_FROM_NUMBER: "+1234567890"
+      
+      # Casbin
+      CASBIN_MODEL: "/app/casbin/model.conf"
+      USE_SIMPLE_CASBIN: "true"
+      
+      # Application
+      APP_PORT: "8080"
+      GIN_MODE: "debug"
+    ports:
+      - "8080:8080"  # Direct access for testing
+    depends_on:
+      - db
+      - redis
+    networks:
+      - authz_network
+    volumes:
+      - ../../casbin:/app/casbin:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Envoy Proxy with External Authorization
+  envoy:
+    image: envoyproxy/envoy:v1.28-latest
+    ports:
+      - "8000:8000"  # Main proxy port
+      - "8001:8001"  # Admin port
+    volumes:
+      - ./envoy-external-authz.yaml:/etc/envoy/envoy.yaml:ro
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "debug"]
+    depends_on:
+      - authzsvc
+    networks:
+      - authz_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+
+networks:
+  authz_network:
+    driver: bridge

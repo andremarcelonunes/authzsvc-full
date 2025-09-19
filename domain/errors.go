@@ -29,9 +29,10 @@ var (
 
 // Session errors
 var (
-	ErrSessionNotFound = errors.New("session not found")
-	ErrSessionExpired  = errors.New("session has expired")
-	ErrSessionRevoked  = errors.New("session has been revoked")
+	ErrSessionNotFound     = errors.New("session not found")
+	ErrSessionExpired      = errors.New("session has expired")
+	ErrSessionRevoked      = errors.New("session has been revoked")
+	ErrConcurrentRefresh   = errors.New("concurrent token refresh detected")
 )
 
 // Authorization errors

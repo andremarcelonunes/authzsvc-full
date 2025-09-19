@@ -119,6 +119,7 @@ func (c *Container) initServices() error {
 		c.TokenSvc,
 		c.OTPSvc,
 		c.PolicySvc, // Will be initialized separately
+		c.RedisClient,
 	)
 
 	return nil

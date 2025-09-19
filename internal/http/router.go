@@ -6,10 +6,15 @@ import (
 	"github.com/you/authzsvc/internal/http/middleware"
 )
 
-func BuildRouter(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, jwtmw *middleware.AuthMW, cb *middleware.CasbinMW) *gin.Engine {
+func BuildRouter(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware) *gin.Engine {
 	r := gin.New(); r.Use(gin.Recovery())
 
 	r.GET("/health", func(c *gin.Context){ c.JSON(200, gin.H{"ok": true}) })
+
+	// External authorization endpoints for Envoy integration
+	external := r.Group("/external")
+	external.POST("/authz", eh.Authorize)
+	external.GET("/health", eh.Health)
 
 	auth := r.Group("/auth")
 	auth.POST("/register", ah.Register)
@@ -21,6 +26,16 @@ func BuildRouter(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, jwtmw *
 	v := r.Group("/").Use(jwtmw.WithJWT(), cb.Enforce())
 	v.GET("/auth/me", ah.Me)
 	v.POST("/auth/logout", ah.Logout)
+	v.GET("/users/:id", func(c *gin.Context) {
+		userID := c.Param("id")
+		currentUserID, _ := c.Get("user_id")
+		c.JSON(200, gin.H{
+			"message": "User data access successful",
+			"requested_user_id": userID,
+			"current_user_id": currentUserID,
+			"note": "This endpoint demonstrates SimpleCasbinMW field validation",
+		})
+	})
 
 	adm := r.Group("/admin").Use(jwtmw.WithJWT(), cb.Enforce())
 	adm.GET("/policies", ph.List)

@@ -75,3 +75,59 @@ func (r *SessionRepositoryImpl) DeleteExpired(ctx context.Context) error {
 	// In a database implementation, you'd scan and delete expired sessions
 	return nil
 }
+
+// ExtendTTL implements domain.SessionRepository
+func (r *SessionRepositoryImpl) ExtendTTL(ctx context.Context, sessionID string, ttl time.Duration) error {
+	key := r.prefix + sessionID
+	
+	// Check if session exists first
+	exists, err := r.client.Exists(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("failed to check session existence: %w", err)
+	}
+	
+	if exists == 0 {
+		return domain.ErrSessionNotFound
+	}
+	
+	// Extend TTL
+	success, err := r.client.Expire(ctx, key, ttl).Result()
+	if err != nil {
+		return fmt.Errorf("failed to extend session TTL: %w", err)
+	}
+	
+	if !success {
+		return domain.ErrSessionNotFound
+	}
+	
+	return nil
+}
+
+// Update implements domain.SessionRepository
+func (r *SessionRepositoryImpl) Update(ctx context.Context, session *domain.Session) error {
+	key := r.prefix + session.ID
+	
+	// Check if session exists
+	exists, err := r.client.Exists(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("failed to check session existence: %w", err)
+	}
+	
+	if exists == 0 {
+		return domain.ErrSessionNotFound
+	}
+	
+	// Update session data with current TTL
+	data, err := json.Marshal(session)
+	if err != nil {
+		return fmt.Errorf("failed to marshal session: %w", err)
+	}
+	
+	// Keep existing TTL when updating
+	ttl, err := r.client.TTL(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("failed to get session TTL: %w", err)
+	}
+	
+	return r.client.Set(ctx, key, data, ttl).Err()
+}

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/you/authzsvc/domain"
 	"github.com/you/authzsvc/internal/mocks"
 )
@@ -16,7 +17,8 @@ func createAuthServiceForTest(t *testing.T,
 	passwordSvc domain.PasswordService,
 	tokenSvc domain.TokenService,
 	otpSvc domain.OTPService,
-	policySvc domain.PolicyService) domain.AuthService {
+	policySvc domain.PolicyService,
+	redisClient *redis.Client) domain.AuthService {
 	t.Helper()
 
 	// Use provided mocks or create defaults
@@ -38,8 +40,10 @@ func createAuthServiceForTest(t *testing.T,
 	if policySvc == nil {
 		policySvc = mocks.NewMockPolicyService()
 	}
+	// Leave redisClient as nil for tests that don't need Redis
+	// This allows graceful degradation in blacklist functionality
 
-	return NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc)
+	return NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient)
 }
 
 // createValidUser creates a valid user entity for testing
@@ -283,6 +287,16 @@ func setupSuccessfulRefreshMocks(t *testing.T,
 		return nil, domain.ErrSessionNotFound
 	}
 
+	// Session TTL extension succeeds
+	sessionRepo.ExtendTTLFunc = func(ctx context.Context, sessionID string, ttl time.Duration) error {
+		return nil
+	}
+
+	// Session update succeeds
+	sessionRepo.UpdateFunc = func(ctx context.Context, session *domain.Session) error {
+		return nil
+	}
+
 	// User exists
 	userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
 		if id == testUser.ID {
@@ -294,5 +308,10 @@ func setupSuccessfulRefreshMocks(t *testing.T,
 	// New access token generation succeeds
 	tokenSvc.GenerateAccessTokenFunc = func(userID uint, role string, sessionID string) (string, error) {
 		return "new_access_token_123", nil
+	}
+
+	// New refresh token generation succeeds (for token rotation)
+	tokenSvc.GenerateRefreshTokenFunc = func(userID uint, role string, sessionID string) (string, error) {
+		return "new_refresh_token_456", nil
 	}
 }

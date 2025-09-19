@@ -1,6 +1,9 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // UserRepository defines user data access operations
 type UserRepository interface {
@@ -18,6 +21,8 @@ type SessionRepository interface {
 	FindByID(ctx context.Context, sessionID string) (*Session, error)
 	Delete(ctx context.Context, sessionID string) error
 	DeleteExpired(ctx context.Context) error
+	ExtendTTL(ctx context.Context, sessionID string, ttl time.Duration) error
+	Update(ctx context.Context, session *Session) error
 }
 
 // AuthService defines authentication business logic
