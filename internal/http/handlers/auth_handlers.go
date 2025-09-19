@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -174,12 +175,14 @@ func (h *AuthHandlers) Refresh(c *gin.Context) {
 
 	result, err := h.authSvc.RefreshToken(c.Request.Context(), req.RefreshToken)
 	if err != nil {
-		switch err {
-		case domain.ErrTokenInvalid, domain.ErrTokenExpired:
+		// Use errors.Is for wrapped errors from CB-179 enhanced security implementation
+		if errors.Is(err, domain.ErrTokenInvalid) || errors.Is(err, domain.ErrTokenExpired) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
-		case domain.ErrSessionNotFound, domain.ErrSessionExpired:
+		} else if errors.Is(err, domain.ErrSessionNotFound) || errors.Is(err, domain.ErrSessionExpired) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Session expired"})
-		default:
+		} else if errors.Is(err, domain.ErrUserInactive) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User account is inactive"})
+		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Token refresh failed"})
 		}
 		return
@@ -187,9 +190,10 @@ func (h *AuthHandlers) Refresh(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
-			"access_token": result.AccessToken,
-			"token_type":   "Bearer",
-			"expires_in":   result.ExpiresIn,
+			"access_token":  result.AccessToken,
+			"refresh_token": result.RefreshToken, // CB-179: Return new refresh token for security rotation
+			"token_type":    "Bearer",
+			"expires_in":    result.ExpiresIn,
 		},
 	})
 }

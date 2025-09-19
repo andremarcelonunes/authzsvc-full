@@ -84,6 +84,7 @@ type Config struct {
 	CasbinModelPath  string
 	OwnershipRules   []OwnershipRule
 	ValidationRules  []ValidationRule // New field for enhanced validation rules
+	UseSimpleCasbin  bool             // Feature flag for SimpleCasbinMW
 }
 
 func env(k, def string) string {
@@ -154,6 +155,7 @@ func Load() (*Config, error) {
 		CasbinModelPath:  configFile.Casbin.ModelPath,
 		OwnershipRules:   ownershipRules,
 		ValidationRules:  validationRules,
+		UseSimpleCasbin:  env("USE_SIMPLE_CASBIN", "false") == "true",
 	}, nil
 }
 

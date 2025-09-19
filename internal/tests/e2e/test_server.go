@@ -124,26 +124,27 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 	policySvc := services.NewPolicyService(cas.E)
 
 	// Initialize auth service
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc)
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis)
 
 	// Initialize handlers
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo)
 	polH := &handlers.PolicyHandlers{E: cas.E}
+	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E)
 
 	// Initialize middleware
 	jwtMW := middleware.NewAuthMW(tokenSvc, sessionRepo)
 	casbinMW := middleware.NewCasbinMW(cas.E, suite.Config.OwnershipRules)
 
 	// Build and return router
-	router := httpx.BuildRouter(authH, polH, jwtMW, casbinMW)
+	router := httpx.BuildRouter(authH, polH, externalAuthzH, jwtMW, casbinMW)
 
-	// Seed default policies for testing
+	// Seed default policies for testing (with 4 columns for v3 validation)
 	policies, _ := cas.E.GetPolicy()
 	if len(policies) == 0 {
-		cas.E.AddPolicy("role_admin", "/admin/*", "(GET|POST|PUT|DELETE)")
-		cas.E.AddPolicy("role_user", "/auth/me", "GET")
-		cas.E.AddPolicy("role_user", "/auth/logout", "POST")
-		cas.E.AddPolicy("role_user", "/auth/otp/*", "POST")
+		cas.E.AddPolicy("role_admin", "/admin/*", "(GET|POST|PUT|DELETE)", "")
+		cas.E.AddPolicy("role_user", "/auth/me", "GET", "")
+		cas.E.AddPolicy("role_user", "/auth/logout", "POST", "")
+		cas.E.AddPolicy("role_user", "/auth/otp/*", "POST", "")
 		_ = cas.E.SavePolicy()
 	}
 

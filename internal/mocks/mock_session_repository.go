@@ -2,6 +2,7 @@ package mocks
 
 import (
 	"context"
+	"time"
 
 	"github.com/you/authzsvc/domain"
 )
@@ -12,6 +13,8 @@ type MockSessionRepository struct {
 	FindByIDFunc      func(ctx context.Context, sessionID string) (*domain.Session, error)
 	DeleteFunc        func(ctx context.Context, sessionID string) error
 	DeleteExpiredFunc func(ctx context.Context) error
+	ExtendTTLFunc     func(ctx context.Context, sessionID string, ttl time.Duration) error
+	UpdateFunc        func(ctx context.Context, session *domain.Session) error
 }
 
 // NewMockSessionRepository creates a new MockSessionRepository with default behaviors
@@ -50,6 +53,24 @@ func (m *MockSessionRepository) Delete(ctx context.Context, sessionID string) er
 func (m *MockSessionRepository) DeleteExpired(ctx context.Context) error {
 	if m.DeleteExpiredFunc != nil {
 		return m.DeleteExpiredFunc(ctx)
+	}
+	// Default behavior: success
+	return nil
+}
+
+// ExtendTTL extends the TTL of a session
+func (m *MockSessionRepository) ExtendTTL(ctx context.Context, sessionID string, ttl time.Duration) error {
+	if m.ExtendTTLFunc != nil {
+		return m.ExtendTTLFunc(ctx, sessionID, ttl)
+	}
+	// Default behavior: success
+	return nil
+}
+
+// Update updates a session
+func (m *MockSessionRepository) Update(ctx context.Context, session *domain.Session) error {
+	if m.UpdateFunc != nil {
+		return m.UpdateFunc(ctx, session)
 	}
 	// Default behavior: success
 	return nil
