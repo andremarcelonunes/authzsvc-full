@@ -69,3 +69,19 @@ docker-compose.override.yml
 # Secrets
 secrets/
 .secrets
+
+# Node.js and npm
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+.npm
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# K6
+k6.exe

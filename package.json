@@ -1,0 +1,19 @@
+{
+  "name": "authzsvc_full",
+  "version": "1.0.0",
+  "description": "[![Go Version](https://img.shields.io/badge/Go-1.22+-blue.svg)](https://golang.org) [![Architecture](https://img.shields.io/badge/Architecture-Clean%20%2B%20Hexagonal-green.svg)](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html) [![Coverage](https://img.shields.io/badge/Coverage-95%25-brightgreen.svg)](./docs/TESTING.md) [![SOLID](https://img.shields.io/badge/SOLID-Compliant-blue.svg)](./docs/ARCHITECTURE.md) [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](./docker-compose.yml) [![Envoy](https://img.shields.io/badge/Envoy-External%20AuthZ-orange.svg)](./examples/envoy/README.md) [![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)",
+  "main": "test_decision_table.js",
+  "directories": {
+    "doc": "docs",
+    "example": "examples"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}
