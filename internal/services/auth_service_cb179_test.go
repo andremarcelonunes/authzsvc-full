@@ -224,7 +224,7 @@ func TestRefreshTokenSecurityEnhancements(t *testing.T) {
 			tt.setupMocks(userRepo, sessionRepo, tokenSvc, redisClient)
 
 			// Create service with nil Redis client for testing (will use default behavior)
-			authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil)
+			authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, nil)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -331,7 +331,7 @@ func TestRefreshTokenLockScenarios(t *testing.T) {
 			}
 
 			// Create service
-			authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil)
+			authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, nil)
 
 			// Execute test
 			ctx := createTestContext(t)

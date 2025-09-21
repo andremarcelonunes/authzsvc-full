@@ -149,6 +149,52 @@ func TestAuthServiceImpl_Register(t *testing.T) {
 				}
 			},
 		},
+		// Validation test cases
+		{
+			name:     "validation service error",
+			email:    "test@example.com",
+			phone:    "+1234567890",
+			password: "password123",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordSvc *mocks.MockPasswordService, otpSvc *mocks.MockOTPService) {
+				// Don't need to setup since validation fails first
+			},
+			expectedError: fmt.Errorf("registration validation failed: %w", errors.New("validation service unavailable")),
+			validateUser: func(t *testing.T, user *domain.User) {
+				if user != nil {
+					t.Error("expected user to be nil when validation service fails")
+				}
+			},
+		},
+		{
+			name:     "validation fails - invalid email",
+			email:    "invalid-email",
+			phone:    "+1234567890",
+			password: "password123",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordSvc *mocks.MockPasswordService, otpSvc *mocks.MockOTPService) {
+				// Don't need to setup since validation fails first
+			},
+			expectedError: errors.New("registration validation failed: invalid email format"),
+			validateUser: func(t *testing.T, user *domain.User) {
+				if user != nil {
+					t.Error("expected user to be nil when validation fails")
+				}
+			},
+		},
+		{
+			name:     "validation fails - weak password",
+			email:    "test@example.com",
+			phone:    "+1234567890",
+			password: "123",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordSvc *mocks.MockPasswordService, otpSvc *mocks.MockOTPService) {
+				// Don't need to setup since validation fails first
+			},
+			expectedError: errors.New("registration validation failed: password too short"),
+			validateUser: func(t *testing.T, user *domain.User) {
+				if user != nil {
+					t.Error("expected user to be nil when validation fails")
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -161,8 +207,60 @@ func TestAuthServiceImpl_Register(t *testing.T) {
 			// Setup test-specific mock behavior
 			tt.setupMocks(userRepo, passwordSvc, otpSvc)
 
+			// Create validation service based on test type
+			var validationSvc *mocks.MockRequestValidationService
+			
+			// Check if this is a validation failure test
+			if strings.Contains(tt.name, "validation") {
+				validationSvc = mocks.NewMockRequestValidationService()
+				
+				// Configure validation based on test name
+				if strings.Contains(tt.name, "service error") {
+					validationSvc.ValidateRegistrationRequestFunc = func(ctx context.Context, email, phone, password, role string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+						return nil, errors.New("validation service unavailable")
+					}
+				} else if strings.Contains(tt.name, "invalid email") {
+					validationSvc.ValidateRegistrationRequestFunc = func(ctx context.Context, email, phone, password, role string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+						return &domain.ValidationResult{
+							IsValid: false,
+							Passed:  false,
+							Errors: []domain.ValidationError{
+								{
+									Code:    "INVALID_EMAIL",
+									Message: "invalid email format",
+									Field:   "email",
+								},
+							},
+							Warnings:     []domain.ValidationError{},
+							FieldResults: make(map[string]domain.FieldValidationResult),
+							RulesApplied: 1,
+						}, nil
+					}
+				} else if strings.Contains(tt.name, "weak password") {
+					validationSvc.ValidateRegistrationRequestFunc = func(ctx context.Context, email, phone, password, role string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+						return &domain.ValidationResult{
+							IsValid: false,
+							Passed:  false,
+							Errors: []domain.ValidationError{
+								{
+									Code:    "WEAK_PASSWORD",
+									Message: "password too short",
+									Field:   "password",
+								},
+							},
+							Warnings:     []domain.ValidationError{},
+							FieldResults: make(map[string]domain.FieldValidationResult),
+							RulesApplied: 1,
+						}, nil
+					}
+				}
+			} else {
+				// Use successful validation for non-validation tests
+				validationSvc = createSuccessfulValidationMock(t)
+			}
+
 			// Create service
-			authService := createAuthServiceForTest(t, userRepo, nil, passwordSvc, nil, otpSvc, nil, nil)
+			authService := createAuthServiceForTest(t, userRepo, nil, passwordSvc, nil, otpSvc, nil, nil, validationSvc)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -199,6 +297,7 @@ func TestAuthServiceImpl_Login(t *testing.T) {
 		email          string
 		password       string
 		setupMocks     func(*mocks.MockUserRepository, *mocks.MockSessionRepository, *mocks.MockPasswordService, *mocks.MockTokenService)
+		setupValidation func(*mocks.MockRequestValidationService)
 		expectedError  error
 		validateResult func(t *testing.T, result *domain.AuthResult)
 	}{
@@ -347,6 +446,49 @@ func TestAuthServiceImpl_Login(t *testing.T) {
 				}
 			},
 		},
+		// Validation test cases
+		{
+			name:     "validation service error",
+			email:    "test@example.com",
+			password: "password123",
+			setupMocks: func(userRepo *mocks.MockUserRepository, sessionRepo *mocks.MockSessionRepository, passwordSvc *mocks.MockPasswordService, tokenSvc *mocks.MockTokenService) {
+				// Don't need to setup since validation fails first
+			},
+			expectedError: fmt.Errorf("login validation failed: %w", errors.New("validation service unavailable")),
+			validateResult: func(t *testing.T, result *domain.AuthResult) {
+				if result != nil {
+					t.Error("expected result to be nil when validation service fails")
+				}
+			},
+		},
+		{
+			name:     "validation fails - invalid email format",
+			email:    "invalid-email",
+			password: "password123",
+			setupMocks: func(userRepo *mocks.MockUserRepository, sessionRepo *mocks.MockSessionRepository, passwordSvc *mocks.MockPasswordService, tokenSvc *mocks.MockTokenService) {
+				// Don't need to setup since validation fails first
+			},
+			expectedError: errors.New("login validation failed: invalid email format"),
+			validateResult: func(t *testing.T, result *domain.AuthResult) {
+				if result != nil {
+					t.Error("expected result to be nil when validation fails")
+				}
+			},
+		},
+		{
+			name:     "validation fails - empty password",
+			email:    "test@example.com",
+			password: "",
+			setupMocks: func(userRepo *mocks.MockUserRepository, sessionRepo *mocks.MockSessionRepository, passwordSvc *mocks.MockPasswordService, tokenSvc *mocks.MockTokenService) {
+				// Don't need to setup since validation fails first
+			},
+			expectedError: errors.New("login validation failed: password is required"),
+			validateResult: func(t *testing.T, result *domain.AuthResult) {
+				if result != nil {
+					t.Error("expected result to be nil when validation fails")
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -360,8 +502,59 @@ func TestAuthServiceImpl_Login(t *testing.T) {
 			// Setup test-specific mock behavior
 			tt.setupMocks(userRepo, sessionRepo, passwordSvc, tokenSvc)
 
-			// Create service
-			authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, nil, nil, nil)
+			// Create validation service based on test type
+			var validationSvc *mocks.MockRequestValidationService
+			
+			// Check if this is a validation failure test
+			if strings.Contains(tt.name, "validation") {
+				validationSvc = mocks.NewMockRequestValidationService()
+				
+				// Configure validation based on test name
+				if strings.Contains(tt.name, "service error") {
+					validationSvc.ValidateLoginRequestFunc = func(ctx context.Context, email, password string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+						return nil, errors.New("validation service unavailable")
+					}
+				} else if strings.Contains(tt.name, "invalid email") {
+					validationSvc.ValidateLoginRequestFunc = func(ctx context.Context, email, password string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+						return &domain.ValidationResult{
+							IsValid: false,
+							Passed:  false,
+							Errors: []domain.ValidationError{
+								{
+									Code:    "INVALID_EMAIL",
+									Message: "invalid email format",
+									Field:   "email",
+								},
+							},
+							Warnings:     []domain.ValidationError{},
+							FieldResults: make(map[string]domain.FieldValidationResult),
+							RulesApplied: 1,
+						}, nil
+					}
+				} else if strings.Contains(tt.name, "empty password") {
+					validationSvc.ValidateLoginRequestFunc = func(ctx context.Context, email, password string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+						return &domain.ValidationResult{
+							IsValid: false,
+							Passed:  false,
+							Errors: []domain.ValidationError{
+								{
+									Code:    "EMPTY_PASSWORD",
+									Message: "password is required",
+									Field:   "password",
+								},
+							},
+							Warnings:     []domain.ValidationError{},
+							FieldResults: make(map[string]domain.FieldValidationResult),
+							RulesApplied: 1,
+						}, nil
+					}
+				}
+			} else {
+				// Use successful validation for non-validation tests
+				validationSvc = createSuccessfulValidationMock(t)
+			}
+			
+			authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, nil, nil, nil, validationSvc)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -542,8 +735,9 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 			// Setup test-specific mock behavior
 			tt.setupMocks(userRepo, sessionRepo, tokenSvc)
 
-			// Create service
-			authService := createAuthServiceForTest(t, userRepo, sessionRepo, nil, tokenSvc, nil, nil, nil)
+			// Create service with successful validation
+			validationSvc := createSuccessfulValidationMock(t)
+			authService := createAuthServiceForTest(t, userRepo, sessionRepo, nil, tokenSvc, nil, nil, nil, validationSvc)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -624,8 +818,9 @@ func TestAuthServiceImpl_Logout(t *testing.T) {
 			// Setup test-specific mock behavior
 			tt.setupMocks(sessionRepo)
 
-			// Create service
-			authService := createAuthServiceForTest(t, nil, sessionRepo, nil, nil, nil, nil, nil)
+			// Create service with successful validation
+			validationSvc := createSuccessfulValidationMock(t)
+			authService := createAuthServiceForTest(t, nil, sessionRepo, nil, nil, nil, nil, nil, validationSvc)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -708,8 +903,9 @@ func TestAuthServiceImpl_GetUserProfile(t *testing.T) {
 			// Setup test-specific mock behavior
 			tt.setupMocks(userRepo)
 
-			// Create service
-			authService := createAuthServiceForTest(t, userRepo, nil, nil, nil, nil, nil, nil)
+			// Create service with successful validation
+			validationSvc := createSuccessfulValidationMock(t)
+			authService := createAuthServiceForTest(t, userRepo, nil, nil, nil, nil, nil, nil, validationSvc)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -763,8 +959,9 @@ func TestAuthServiceImpl_CompleteAuthFlow(t *testing.T) {
 	tokenSvc := mocks.NewMockTokenService()
 	otpSvc := mocks.NewMockOTPService()
 
-	// Create service
-	authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, nil, nil)
+	// Create service with successful validation
+	validationSvc := createSuccessfulValidationMock(t)
+	authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, nil, nil, validationSvc)
 
 	// Test data
 	email := "integration@test.com"

@@ -74,7 +74,7 @@ func TestSimpleCasbinMW_Enforce(t *testing.T) {
 			name: "access granted - no validation rule",
 			setupEnforcer: func() *casbin.Enforcer {
 				e := createTestEnforcer()
-				e.AddPolicy("role_user", "/users/:id", "GET")
+				e.AddPolicy("role_user", "/users/:id", "GET", "")
 				return e
 			},
 			setupContext: func(c *gin.Context) {
@@ -163,7 +163,7 @@ func TestSimpleCasbinMW_Enforce(t *testing.T) {
 			name: "admin access - no validation rule",
 			setupEnforcer: func() *casbin.Enforcer {
 				e := createTestEnforcer()
-				e.AddPolicy("role_admin", "/users/:id", "GET")
+				e.AddPolicy("role_admin", "/users/:id", "GET", "")
 				return e
 			},
 			setupContext: func(c *gin.Context) {
@@ -242,7 +242,7 @@ func TestSimpleCasbinMW_checkPermission(t *testing.T) {
 			name: "policy found without validation rule",
 			setupEnforcer: func() *casbin.Enforcer {
 				e := createTestEnforcer()
-				e.AddPolicy("role_user", "/users/123", "GET")
+				e.AddPolicy("role_user", "/users/123", "GET", "")
 				return e
 			},
 			role:            "role_user",

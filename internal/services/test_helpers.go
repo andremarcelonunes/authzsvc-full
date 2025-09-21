@@ -18,7 +18,8 @@ func createAuthServiceForTest(t *testing.T,
 	tokenSvc domain.TokenService,
 	otpSvc domain.OTPService,
 	policySvc domain.PolicyService,
-	redisClient *redis.Client) domain.AuthService {
+	redisClient *redis.Client,
+	requestValidator domain.RequestValidationService) domain.AuthService {
 	t.Helper()
 
 	// Use provided mocks or create defaults
@@ -40,10 +41,13 @@ func createAuthServiceForTest(t *testing.T,
 	if policySvc == nil {
 		policySvc = mocks.NewMockPolicyService()
 	}
+	if requestValidator == nil {
+		requestValidator = mocks.NewMockRequestValidationService()
+	}
 	// Leave redisClient as nil for tests that don't need Redis
 	// This allows graceful degradation in blacklist functionality
 
-	return NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient)
+	return NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator)
 }
 
 // createValidUser creates a valid user entity for testing
@@ -314,4 +318,80 @@ func setupSuccessfulRefreshMocks(t *testing.T,
 	tokenSvc.GenerateRefreshTokenFunc = func(userID uint, role string, sessionID string) (string, error) {
 		return "new_refresh_token_456", nil
 	}
+}
+
+// createSuccessfulValidationMock creates a validation service mock that passes all validations
+func createSuccessfulValidationMock(t *testing.T) *mocks.MockRequestValidationService {
+	t.Helper()
+
+	validationSvc := mocks.NewMockRequestValidationService()
+	
+	// Setup all validation methods to return successful results
+	successResult := &domain.ValidationResult{
+		IsValid:      true,
+		Passed:       true,
+		Errors:       []domain.ValidationError{},
+		Warnings:     []domain.ValidationError{},
+		FieldResults: make(map[string]domain.FieldValidationResult),
+		RulesApplied: 0,
+	}
+	
+	validationSvc.ValidateRegistrationRequestFunc = func(ctx context.Context, email, phone, password, role string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return successResult, nil
+	}
+	
+	validationSvc.ValidateLoginRequestFunc = func(ctx context.Context, email, password string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return successResult, nil
+	}
+	
+	validationSvc.ValidateOTPRequestFunc = func(ctx context.Context, phone, code string, userID uint, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return successResult, nil
+	}
+	
+	validationSvc.ValidateRequestFunc = func(ctx context.Context, request interface{}, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return successResult, nil
+	}
+	
+	return validationSvc
+}
+
+// createFailedValidationMock creates a validation service mock that fails validations
+func createFailedValidationMock(t *testing.T, errorMessage string) *mocks.MockRequestValidationService {
+	t.Helper()
+
+	validationSvc := mocks.NewMockRequestValidationService()
+	
+	// Setup all validation methods to return failed results
+	failResult := &domain.ValidationResult{
+		IsValid: false,
+		Passed:  false,
+		Errors: []domain.ValidationError{
+			{
+				Code:    "VALIDATION_FAILED",
+				Message: errorMessage,
+				Field:   "request",
+			},
+		},
+		Warnings:     []domain.ValidationError{},
+		FieldResults: make(map[string]domain.FieldValidationResult),
+		RulesApplied: 1,
+	}
+	
+	validationSvc.ValidateRegistrationRequestFunc = func(ctx context.Context, email, phone, password, role string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return failResult, nil
+	}
+	
+	validationSvc.ValidateLoginRequestFunc = func(ctx context.Context, email, password string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return failResult, nil
+	}
+	
+	validationSvc.ValidateOTPRequestFunc = func(ctx context.Context, phone, code string, userID uint, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return failResult, nil
+	}
+	
+	validationSvc.ValidateRequestFunc = func(ctx context.Context, request interface{}, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return failResult, nil
+	}
+	
+	return validationSvc
 }

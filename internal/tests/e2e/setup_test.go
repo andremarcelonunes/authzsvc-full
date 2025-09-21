@@ -20,16 +20,6 @@ import (
 	"github.com/you/authzsvc/domain"
 )
 
-// TestSuite holds the E2E test infrastructure
-type TestSuite struct {
-	Config     *config.Config
-	DB         *gorm.DB
-	RawDB      *sql.DB
-	Redis      *redis.Client
-	TestPrefix string
-	StartTime  time.Time
-}
-
 var globalSuite *TestSuite
 
 // TestMain sets up and tears down the test environment
@@ -315,10 +305,6 @@ func (ts *TestSuite) CleanupTestData() error {
 	return nil
 }
 
-// GetRedisKey generates a Redis key with test prefix for isolation
-func (ts *TestSuite) GetRedisKey(key string) string {
-	return fmt.Sprintf("%s:%s", ts.TestPrefix, key)
-}
 
 // WaitForServices ensures all required services are ready
 func (ts *TestSuite) WaitForServices(timeout time.Duration) error {
