@@ -468,8 +468,7 @@ func CleanupTestData(t *testing.T, suite *TestSuite) {
 	t.Helper()
 
 	// Clean database
-	helper := NewDatabaseTestHelper(t, suite)
-	if err := helper.CleanAllTables(); err != nil {
+	if err := CleanAllDatabaseTables(suite); err != nil {
 		t.Logf("Warning: Failed to clean database: %v", err)
 	}
 

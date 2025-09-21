@@ -12,13 +12,16 @@ import (
 
 // AuthServiceImpl implements domain.AuthService
 type AuthServiceImpl struct {
-	userRepo     domain.UserRepository
-	sessionRepo  domain.SessionRepository
-	passwordSvc  domain.PasswordService
-	tokenSvc     domain.TokenService
-	otpSvc       domain.OTPService
-	policySvc    domain.PolicyService
-	redisClient  *redis.Client
+	userRepo        domain.UserRepository
+	sessionRepo     domain.SessionRepository
+	passwordSvc     domain.PasswordService
+	tokenSvc        domain.TokenService
+	otpSvc          domain.OTPService
+	policySvc       domain.PolicyService
+	redisClient     *redis.Client
+	
+	// Validation services
+	requestValidator domain.RequestValidationService
 }
 
 // NewAuthService creates a new auth service
@@ -30,20 +33,45 @@ func NewAuthService(
 	otpSvc domain.OTPService,
 	policySvc domain.PolicyService,
 	redisClient *redis.Client,
+	requestValidator domain.RequestValidationService,
 ) domain.AuthService {
 	return &AuthServiceImpl{
-		userRepo:    userRepo,
-		sessionRepo: sessionRepo,
-		passwordSvc: passwordSvc,
-		tokenSvc:    tokenSvc,
-		otpSvc:      otpSvc,
-		policySvc:   policySvc,
-		redisClient: redisClient,
+		userRepo:         userRepo,
+		sessionRepo:      sessionRepo,
+		passwordSvc:      passwordSvc,
+		tokenSvc:         tokenSvc,
+		otpSvc:           otpSvc,
+		policySvc:        policySvc,
+		redisClient:      redisClient,
+		requestValidator: requestValidator,
 	}
 }
 
 // Register implements domain.AuthService
 func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, role string) (*domain.User, error) {
+	// Validate registration request if validator is available
+	if s.requestValidator != nil {
+		validationCtx := &domain.ValidationContext{
+			RequestID: fmt.Sprintf("reg_%d", time.Now().UnixNano()),
+			Endpoint:  "/auth/register",
+			Method:    "POST",
+			Timestamp: time.Now(),
+		}
+		
+		validationResult, err := s.requestValidator.ValidateRegistrationRequest(ctx, email, phone, password, role, validationCtx)
+		if err != nil {
+			return nil, fmt.Errorf("registration validation failed: %w", err)
+		}
+		
+		if !validationResult.Passed {
+			// Convert validation errors to domain errors
+			if len(validationResult.Errors) > 0 {
+				return nil, fmt.Errorf("registration validation failed: %s", validationResult.Errors[0].Message)
+			}
+			return nil, domain.ErrValidationFailed
+		}
+	}
+
 	// Check if user already exists
 	existingUser, err := s.userRepo.FindByEmail(ctx, email)
 	if err == nil && existingUser != nil {
@@ -82,6 +110,29 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 
 // Login implements domain.AuthService
 func (s *AuthServiceImpl) Login(ctx context.Context, email, password string) (*domain.AuthResult, error) {
+	// Validate login request if validator is available
+	if s.requestValidator != nil {
+		validationCtx := &domain.ValidationContext{
+			RequestID: fmt.Sprintf("login_%d", time.Now().UnixNano()),
+			Endpoint:  "/auth/login",
+			Method:    "POST",
+			Timestamp: time.Now(),
+		}
+		
+		validationResult, err := s.requestValidator.ValidateLoginRequest(ctx, email, password, validationCtx)
+		if err != nil {
+			return nil, fmt.Errorf("login validation failed: %w", err)
+		}
+		
+		if !validationResult.Passed {
+			// Convert validation errors to domain errors
+			if len(validationResult.Errors) > 0 {
+				return nil, fmt.Errorf("login validation failed: %s", validationResult.Errors[0].Message)
+			}
+			return nil, domain.ErrValidationFailed
+		}
+	}
+
 	// Find user
 	user, err := s.userRepo.FindByEmail(ctx, email)
 	if err != nil {

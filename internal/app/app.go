@@ -13,6 +13,7 @@ import (
 	"github.com/you/authzsvc/internal/infrastructure/notifications"
 	"github.com/you/authzsvc/internal/infrastructure/repositories"
 	"github.com/you/authzsvc/internal/infrastructure/auth"
+	"github.com/you/authzsvc/internal/infrastructure/validation"
 	"github.com/you/authzsvc/internal/services"
 
 )
@@ -46,12 +47,128 @@ func Run(cfg *config.Config) error {
 	// Initialize policy service
 	policySvc := services.NewPolicyService(cas.E)
 	
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb)
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, nil)
+	
+	// CB-182: Initialize validation services
+	log.Println("CB-182: Initializing validation system...")
+	
+	// Initialize validation infrastructure
+	validationLogger := validation.NewValidationLogger()
+	validationMetrics := validation.NewValidationMetricsCollector()
+	
+	// Configure validation services
+	rateLimitConfig := services.RateLimitConfig{
+		DefaultWindowSize:    cfg.ValidationConfig.ValidationTimeout,
+		DefaultLimit:         100, // 100 requests per window
+		BruteForceThreshold:  5,   // 5 failed attempts
+		BruteForceWindow:     cfg.ValidationConfig.ValidationTimeout,
+		BlockDuration:        cfg.ValidationConfig.ValidationTimeout * 12, // 12x validation timeout
+		EnableGracefulMode:   cfg.ValidationConfig.EnableGracefulMode,
+	}
+	rateLimitValidationSvc := services.NewRateLimitValidationService(rdb, rateLimitConfig)
+	
+	// Initialize mock repositories for CB-182 (in production, use real repositories)
+	securityViolationRepo := validation.NewMockSecurityViolationRepository()
+	
+	// Initialize security validation service
+	securityConfig := services.SecurityValidationConfig{
+		EnableRealTimeScanning: true,
+		MaxInputSize:          int(cfg.ValidationConfig.MaxRequestSize),
+		SanitizationLevel:     "moderate",
+	}
+	securityValidationSvc := services.NewSecurityValidationService(securityViolationRepo, securityConfig)
+	
+	// Initialize business validation service
+	businessConfig := services.BusinessValidationConfig{
+		PasswordPolicy: services.PasswordPolicy{
+			MinLength:           8,
+			MaxLength:           128,
+			RequireUppercase:    true,
+			RequireLowercase:    true,
+			RequireNumbers:      true,
+			RequireSpecialChars: false,
+			ForbiddenPasswords:  []string{"password", "123456", "admin"},
+			MaxRepeatingChars:   3,
+		},
+		EmailValidation: services.EmailValidationConfig{
+			AllowedDomains:      []string{},
+			BlockedDomains:      []string{"tempmail.com", "10minutemail.com"},
+			RequireVerification: false,
+			MaxLength:          254,
+		},
+		PhoneValidation: services.PhoneValidationConfig{
+			RequiredFormat:   "E.164",
+			AllowedCountries: []string{},
+			BlockedCountries: []string{},
+		},
+		UserLimits: services.UserLimitsConfig{
+			MaxRegistrationsPerIP:   5,
+			MaxRegistrationsPerDay:  10,
+			MaxLoginAttemptsPerHour: 10,
+			MaxOTPAttemptsPerHour:   5,
+		},
+	}
+	businessValidationSvc := services.NewBusinessValidationService(userRepo, businessConfig)
+	
+	// Configure request validation service
+	requestValidationConfig := services.RequestValidationConfig{
+		EnableCaching:        cfg.ValidationConfig.EnableValidationCaching,
+		CacheTimeout:         cfg.ValidationConfig.CacheTimeout,
+		MaxValidationTime:    cfg.ValidationConfig.MaxValidationTime,
+		EnableMetrics:        cfg.ValidationConfig.EnableMetrics,
+	}
+	requestValidationSvc := services.NewRequestValidationService(
+		securityValidationSvc,
+		businessValidationSvc,
+		rateLimitValidationSvc,
+		rdb,
+		requestValidationConfig,
+	)
+	
+	// Configure validation middleware
+	validationConfig := middleware.ValidationConfig{
+		EnableSecurityValidation: cfg.ValidationConfig.EnableSecurityValidation,
+		EnableBusinessValidation: cfg.ValidationConfig.EnableBusinessValidation,
+		EnableRateLimiting:      cfg.ValidationConfig.EnableRateLimiting,
+		MaxRequestSize:          cfg.ValidationConfig.MaxRequestSize,
+		ValidationTimeout:       cfg.ValidationConfig.ValidationTimeout,
+		SkipValidationPaths:     cfg.ValidationConfig.SkipValidationPaths,
+		LogValidationEvents:     cfg.ValidationConfig.LogValidationEvents,
+		EnableMetrics:          cfg.ValidationConfig.EnableMetrics,
+		ShadowMode:             cfg.ValidationConfig.ShadowMode, // CB-182: Shadow mode configuration
+	}
+	
+	var validationMW *middleware.ValidationMiddleware
+	if cfg.ValidationConfig.ShadowMode {
+		log.Println("CB-182: Validation running in SHADOW MODE (logging only)")
+		// In shadow mode, we'll still create the middleware but configure it to only log
+		validationMW = middleware.NewValidationMiddleware(
+			requestValidationSvc,
+			securityValidationSvc,
+			businessValidationSvc,
+			rateLimitValidationSvc,
+			validationMetrics,
+			validationLogger,
+			validationConfig,
+		)
+	} else {
+		log.Println("CB-182: Validation running in ENFORCEMENT MODE")
+		validationMW = middleware.NewValidationMiddleware(
+			requestValidationSvc,
+			securityValidationSvc,
+			businessValidationSvc,
+			rateLimitValidationSvc,
+			validationMetrics,
+			validationLogger,
+			validationConfig,
+		)
+	}
 	
 	// Initialize handlers  
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo)
 	polH := &handlers.PolicyHandlers{E: cas.E}
 	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E)
+	docsH := handlers.NewSwaggerDocsHandler()
 	
 	// Initialize middleware
 	jwtMW := middleware.NewAuthMW(tokenSvc, sessionRepo)
@@ -66,25 +183,26 @@ func Run(cfg *config.Config) error {
 		casbinMW = middleware.NewCasbinMW(cas.E, cfg.OwnershipRules)
 	}
 	
-	// Build router
-	r := httpx.BuildRouter(authH, polH, externalAuthzH, jwtMW, casbinMW)
+	// Build router with CB-182 validation middleware
+	r := httpx.BuildRouterWithValidation(authH, polH, externalAuthzH, docsH, jwtMW, casbinMW, validationMW)
 
 	policies, _ := cas.E.GetPolicy()
 	if len(policies) == 0 {
-		// Seed policies with 4 columns (the last column is for field validation rules)
-		// Admin has full access to all admin endpoints via wildcard
-		cas.E.AddPolicy("role_admin", "/admin/*", "(GET|POST|PUT|DELETE)", "*")
-		cas.E.AddPolicy("role_admin", "/auth/me", "GET", "*")
-		// Removed duplicate explicit /admin/policies policy - covered by wildcard
-		
-		// User policies
+		// ===== ROLE INHERITANCE APPROACH =====
+		// Define base user permissions ONCE
 		cas.E.AddPolicy("role_user", "/auth/me", "GET", "*")
 		cas.E.AddPolicy("role_user", "/auth/logout", "POST", "*")
 		cas.E.AddPolicy("role_user", "/auth/otp/*", "POST", "*")
-		// User can access their own profile with field validation
 		cas.E.AddPolicy("role_user", "/users/*", "GET", "path.id==token.user_id")
+		
+		// Define admin-specific permissions
+		cas.E.AddPolicy("role_admin", "/admin/*", "(GET|POST|PUT|DELETE)", "*")
+		
+		// Make admin inherit ALL user permissions automatically
+		cas.E.AddGroupingPolicy("role_admin", "role_user")
+		
 		_ = cas.E.SavePolicy()
-		log.Println("casbin: seeded default policies with 4-column format for SimpleCasbinMW")
+		log.Println("casbin: seeded policies with role inheritance - admin inherits from user")
 	}
 	addr := ":" + cfg.Port
 	log.Printf("listening on %s", addr)

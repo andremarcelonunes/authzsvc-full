@@ -54,14 +54,32 @@ type CasbinConfig struct {
 	ModelPath string `yaml:"model_path"`
 }
 
+// ValidationConfig holds configuration for the CB-182 validation system
+type ValidationConfig struct {
+	EnableSecurityValidation bool          `yaml:"enable_security_validation"`
+	EnableBusinessValidation bool          `yaml:"enable_business_validation"`
+	EnableRateLimiting      bool          `yaml:"enable_rate_limiting"`
+	EnableValidationCaching bool          `yaml:"enable_validation_caching"`
+	MaxRequestSize          int64         `yaml:"max_request_size"`
+	ValidationTimeout       time.Duration `yaml:"validation_timeout"`
+	CacheTimeout           time.Duration `yaml:"cache_timeout"`
+	MaxValidationTime      time.Duration `yaml:"max_validation_time"`
+	SkipValidationPaths    []string      `yaml:"skip_validation_paths"`
+	LogValidationEvents    bool          `yaml:"log_validation_events"`
+	EnableMetrics          bool          `yaml:"enable_metrics"`
+	ShadowMode             bool          `yaml:"shadow_mode"` // Log violations but don't block
+	EnableGracefulMode     bool          `yaml:"enable_graceful_mode"` // Continue if validation fails
+}
+
 type ConfigFile struct {
-	App     AppConfig      `yaml:"app"`
-	Database DatabaseConfig `yaml:"database"`
-	Redis   RedisConfig    `yaml:"redis"`
-	JWT     JWTConfig      `yaml:"jwt"`
-	OTP     OTPConfig      `yaml:"otp"`
-	Twilio  TwilioConfig   `yaml:"twilio"`
-	Casbin  CasbinConfig   `yaml:"casbin"`
+	App        AppConfig        `yaml:"app"`
+	Database   DatabaseConfig   `yaml:"database"`
+	Redis      RedisConfig      `yaml:"redis"`
+	JWT        JWTConfig        `yaml:"jwt"`
+	OTP        OTPConfig        `yaml:"otp"`
+	Twilio     TwilioConfig     `yaml:"twilio"`
+	Casbin     CasbinConfig     `yaml:"casbin"`
+	Validation ValidationConfig `yaml:"validation"`
 }
 
 type Config struct {
@@ -85,6 +103,9 @@ type Config struct {
 	OwnershipRules   []OwnershipRule
 	ValidationRules  []ValidationRule // New field for enhanced validation rules
 	UseSimpleCasbin  bool             // Feature flag for SimpleCasbinMW
+	
+	// CB-182: Validation system configuration
+	ValidationConfig ValidationConfig
 }
 
 func env(k, def string) string {
@@ -135,6 +156,9 @@ func Load() (*Config, error) {
 		validationRules = []ValidationRule{}
 	}
 
+	// Set up validation configuration with defaults for CB-182
+	validationConfig := setupValidationConfig(configFile.Validation)
+
 	return &Config{
 		Port:             fmt.Sprintf("%d", configFile.App.Port),
 		DSN:              configFile.Database.DSN,
@@ -156,6 +180,7 @@ func Load() (*Config, error) {
 		OwnershipRules:   ownershipRules,
 		ValidationRules:  validationRules,
 		UseSimpleCasbin:  env("USE_SIMPLE_CASBIN", "false") == "true",
+		ValidationConfig: validationConfig,
 	}, nil
 }
 
@@ -207,4 +232,66 @@ func atoi(s string) int {
 	var i int
 	fmt.Sscanf(s, "%d", &i)
 	return i
+}
+
+// setupValidationConfig sets up validation configuration with sensible defaults for CB-182
+func setupValidationConfig(configFromFile ValidationConfig) ValidationConfig {
+	// Start with provided configuration
+	config := configFromFile
+	
+	// Set defaults for CB-182 safe rollout (shadow mode initially)
+	if config.ValidationTimeout == 0 {
+		config.ValidationTimeout = 5 * time.Second
+	}
+	if config.CacheTimeout == 0 {
+		config.CacheTimeout = 5 * time.Minute
+	}
+	if config.MaxValidationTime == 0 {
+		config.MaxValidationTime = 10 * time.Second
+	}
+	if config.MaxRequestSize == 0 {
+		config.MaxRequestSize = 1024 * 1024 // 1MB
+	}
+	if len(config.SkipValidationPaths) == 0 {
+		config.SkipValidationPaths = []string{"/health", "/metrics", "/docs", "/external/health"}
+	}
+	
+	// CB-182: Safe rollout configuration - start in shadow mode
+	// Override with environment variables for deployment control
+	if env("VALIDATION_ENABLE_SECURITY", "") != "" {
+		config.EnableSecurityValidation = env("VALIDATION_ENABLE_SECURITY", "false") == "true"
+	} else if !configFromFile.EnableSecurityValidation {
+		config.EnableSecurityValidation = true // Enable by default for CB-182
+	}
+	
+	if env("VALIDATION_ENABLE_BUSINESS", "") != "" {
+		config.EnableBusinessValidation = env("VALIDATION_ENABLE_BUSINESS", "false") == "true"
+	} else if !configFromFile.EnableBusinessValidation {
+		config.EnableBusinessValidation = true // Enable by default for CB-182
+	}
+	
+	if env("VALIDATION_ENABLE_RATE_LIMITING", "") != "" {
+		config.EnableRateLimiting = env("VALIDATION_ENABLE_RATE_LIMITING", "false") == "true"
+	} else if !configFromFile.EnableRateLimiting {
+		config.EnableRateLimiting = true // Enable by default for CB-182
+	}
+	
+	if env("VALIDATION_SHADOW_MODE", "") != "" {
+		config.ShadowMode = env("VALIDATION_SHADOW_MODE", "true") == "true"
+	} else if !configFromFile.ShadowMode {
+		config.ShadowMode = true // START IN SHADOW MODE for safe rollout
+	}
+	
+	if env("VALIDATION_GRACEFUL_MODE", "") != "" {
+		config.EnableGracefulMode = env("VALIDATION_GRACEFUL_MODE", "true") == "true"
+	} else if !configFromFile.EnableGracefulMode {
+		config.EnableGracefulMode = true // Enable graceful degradation
+	}
+	
+	// Always enable logging and metrics for CB-182 monitoring
+	config.LogValidationEvents = true
+	config.EnableMetrics = true
+	config.EnableValidationCaching = true
+	
+	return config
 }

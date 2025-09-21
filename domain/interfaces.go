@@ -99,3 +99,77 @@ type PhoneVerificationPolicy interface {
 	AllowUnverifiedLogin() bool
 	ShouldEnforceVerification(user *User) bool
 }
+
+// RequestValidationService orchestrates comprehensive request validation
+type RequestValidationService interface {
+	// Main validation pipeline
+	ValidateRequest(ctx context.Context, request interface{}, validationCtx *ValidationContext) (*ValidationResult, error)
+	ValidateRegistrationRequest(ctx context.Context, email, phone, password, role string, validationCtx *ValidationContext) (*ValidationResult, error)
+	ValidateLoginRequest(ctx context.Context, email, password string, validationCtx *ValidationContext) (*ValidationResult, error)
+	ValidateOTPRequest(ctx context.Context, phone, code string, userID uint, validationCtx *ValidationContext) (*ValidationResult, error)
+	
+	// Field validation
+	ValidateFields(ctx context.Context, fields map[string]interface{}, rules []ValidationRule) (*ValidationResult, error)
+	ValidateField(ctx context.Context, fieldName string, value interface{}, constraints *FieldConstraint) (*FieldValidationResult, error)
+	
+	// Performance optimization
+	ValidateBatch(ctx context.Context, requests []interface{}, validationCtx *ValidationContext) ([]ValidationResult, error)
+}
+
+// SecurityValidationService provides security-focused validation
+type SecurityValidationService interface {
+	// Threat detection
+	ScanForThreats(ctx context.Context, input map[string]interface{}, rules []SecurityConstraint) (*SecurityValidationResult, error)
+	DetectXSS(ctx context.Context, input string) (*SecurityValidationResult, error)
+	DetectSQLInjection(ctx context.Context, input string) (*SecurityValidationResult, error)
+	DetectScriptInjection(ctx context.Context, input string) (*SecurityValidationResult, error)
+	
+	// Content sanitization
+	SanitizeInput(ctx context.Context, input map[string]interface{}, rules []SecurityConstraint) (map[string]interface{}, error)
+	SanitizeHTML(ctx context.Context, html string) (string, error)
+	
+	// Violation handling
+	RecordViolation(ctx context.Context, violation *SecurityViolation) error
+	GetViolationHistory(ctx context.Context, userID uint, timeWindow time.Duration) ([]SecurityViolation, error)
+}
+
+// BusinessValidationService enforces domain-specific business rules
+type BusinessValidationService interface {
+	// Authentication business rules
+	ValidateRegistrationRules(ctx context.Context, email, phone, password, role string) (*ValidationResult, error)
+	ValidateLoginRules(ctx context.Context, email, password string, user *User) (*ValidationResult, error)
+	ValidateOTPRules(ctx context.Context, phone, code string, userID uint) (*ValidationResult, error)
+	ValidatePasswordComplexity(ctx context.Context, password string) (*ValidationResult, error)
+	
+	// General business rules
+	ValidateBusinessRules(ctx context.Context, entity interface{}, rules []BusinessConstraint) (*ValidationResult, error)
+	ValidateResourceLimits(ctx context.Context, userID uint, resource string, requestedAmount int) error
+	CheckQuotaLimits(ctx context.Context, userID uint, operation string) (*QuotaStatus, error)
+	
+	// Domain constraints
+	ValidateDomainConstraints(ctx context.Context, entity interface{}, domainName string) (*ValidationResult, error)
+	ExecuteCustomValidation(ctx context.Context, entity interface{}, validatorName string, params map[string]interface{}) (*ValidationResult, error)
+}
+
+// RateLimitValidationService handles rate limiting and brute force protection
+type RateLimitValidationService interface {
+	// Rate limiting operations
+	CheckRateLimit(ctx context.Context, key string, limit int, window time.Duration) (*RateLimitResult, error)
+	IncrementCounter(ctx context.Context, key string, window time.Duration) error
+	GetRateLimitStatus(ctx context.Context, key string) (*RateLimitStatus, error)
+	
+	// Advanced rate limiting algorithms
+	CheckSlidingWindowLimit(ctx context.Context, key string, limit int, window time.Duration) (*RateLimitResult, error)
+	CheckTokenBucketLimit(ctx context.Context, key string, capacity int, refillRate float64) (*RateLimitResult, error)
+	
+	// Brute force protection
+	RecordFailedAttempt(ctx context.Context, identifier string, attemptType string) error
+	IsBlocked(ctx context.Context, identifier string, attemptType string) (bool, time.Duration, error)
+	ResetFailedAttempts(ctx context.Context, identifier string, attemptType string) error
+	
+	// Blocking operations
+	BlockUser(ctx context.Context, userID uint, duration time.Duration, reason string) error
+	UnblockUser(ctx context.Context, userID uint) error
+	BlockIP(ctx context.Context, ipAddress string, duration time.Duration, reason string) error
+	UnblockIP(ctx context.Context, ipAddress string) error
+}

@@ -21,6 +21,7 @@ import (
 	"github.com/you/authzsvc/internal/infrastructure/auth"
 	"github.com/you/authzsvc/internal/infrastructure/repositories"
 	"github.com/you/authzsvc/internal/services"
+	"github.com/you/authzsvc/internal/mocks"
 )
 
 // TestServer wraps the HTTP test server with E2E testing capabilities
@@ -89,6 +90,10 @@ func NewTestServer(t *testing.T, suite *TestSuite) *TestServer {
 
 // createTestRouter initializes the router with test dependencies
 func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
+	// Clean up old format Casbin policies from database first
+	// This prevents "invalid policy rule size" errors from old 3-column policies
+	suite.DB.Exec("DELETE FROM casbin_rule")
+	
 	// Initialize Casbin service
 	cas, err := auth.NewCasbinService(suite.DB, suite.Config.CasbinModelPath)
 	if err != nil {
@@ -123,8 +128,11 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 	// Initialize policy service
 	policySvc := services.NewPolicyService(cas.E)
 
+	// Initialize validation service mock for testing
+	requestValidator := mocks.NewMockRequestValidationService()
+	
 	// Initialize auth service
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis)
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis, requestValidator)
 
 	// Initialize handlers
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo)
@@ -136,17 +144,30 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 	casbinMW := middleware.NewCasbinMW(cas.E, suite.Config.OwnershipRules)
 
 	// Build and return router
-	router := httpx.BuildRouter(authH, polH, externalAuthzH, jwtMW, casbinMW)
+	docsH := handlers.NewSwaggerDocsHandler()
+	router := httpx.BuildRouter(authH, polH, externalAuthzH, docsH, jwtMW, casbinMW)
 
-	// Seed default policies for testing (with 4 columns for v3 validation)
-	policies, _ := cas.E.GetPolicy()
-	if len(policies) == 0 {
-		cas.E.AddPolicy("role_admin", "/admin/*", "(GET|POST|PUT|DELETE)", "")
-		cas.E.AddPolicy("role_user", "/auth/me", "GET", "")
-		cas.E.AddPolicy("role_user", "/auth/logout", "POST", "")
-		cas.E.AddPolicy("role_user", "/auth/otp/*", "POST", "")
-		_ = cas.E.SavePolicy()
-	}
+	// Always clear and re-seed policies for consistent test environment
+	// Clear both in-memory and database policies
+	cas.E.ClearPolicy()
+	
+	// Clear database completely and re-save empty policy to ensure clean state
+	_ = cas.E.SavePolicy()
+	
+	// ===== ROLE INHERITANCE APPROACH (matching production) =====
+	// Define base user permissions ONCE
+	cas.E.AddPolicy("role_user", "/auth/me", "GET", "*")
+	cas.E.AddPolicy("role_user", "/auth/logout", "POST", "*")
+	cas.E.AddPolicy("role_user", "/auth/otp/*", "POST", "*")
+	
+	// Define admin-specific permissions
+	cas.E.AddPolicy("role_admin", "/admin/*", "(GET|POST|PUT|DELETE)", "*")
+	
+	// Make admin inherit ALL user permissions automatically
+	cas.E.AddGroupingPolicy("role_admin", "role_user")
+	
+	// Save all policies to database
+	_ = cas.E.SavePolicy()
 
 	return router, nil
 }

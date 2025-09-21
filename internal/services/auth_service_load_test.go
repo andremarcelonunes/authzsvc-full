@@ -30,8 +30,9 @@ func TestRefreshTokenConcurrency(t *testing.T) {
 	// Setup mocks for successful refresh
 	setupSuccessfulRefreshMocks(t, userRepo, sessionRepo, tokenSvc, testUser, testSession)
 
-	// Create service (without Redis for testing)
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil)
+	// Create service (without Redis and validation for testing)
+	requestValidator := mocks.NewMockRequestValidationService()
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator)
 
 	// Test concurrent refresh attempts
 	concurrency := 10
@@ -105,7 +106,8 @@ func TestRefreshTokenPerformance(t *testing.T) {
 	setupSuccessfulRefreshMocks(t, userRepo, sessionRepo, tokenSvc, testUser, testSession)
 
 	// Create service
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil)
+	requestValidator := mocks.NewMockRequestValidationService()
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator)
 
 	// Performance test
 	iterations := 1000
@@ -158,7 +160,8 @@ func TestRefreshTokenMemoryUsage(t *testing.T) {
 	setupSuccessfulRefreshMocks(t, userRepo, sessionRepo, tokenSvc, testUser, testSession)
 
 	// Create service
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil)
+	requestValidator := mocks.NewMockRequestValidationService()
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator)
 
 	// Memory usage test
 	iterations := 10000
@@ -202,7 +205,8 @@ func BenchmarkRefreshToken(b *testing.B) {
 	setupSuccessfulRefreshMocksForBench(b, userRepo, sessionRepo, tokenSvc, testUser, testSession)
 
 	// Create service
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil)
+	requestValidator := mocks.NewMockRequestValidationService()
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator)
 
 	ctx := context.Background()
 

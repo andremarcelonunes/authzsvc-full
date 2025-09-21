@@ -3,9 +3,11 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,7 +200,7 @@ func TestManualAuthenticationFlowWithDatabaseValidation(t *testing.T) {
 		}
 
 		// Check session in Redis
-		sessionExists := checkSessionInRedis(t, suite, refreshToken)
+		sessionExists := checkSessionInRedis(t, suite, accessToken)
 		assert.True(t, sessionExists, "Session should be created in Redis")
 		t.Logf("✅ Session created in Redis")
 	})
@@ -281,11 +283,13 @@ func TestManualAuthenticationFlowWithDatabaseValidation(t *testing.T) {
 		}
 
 		reqBody, _ := json.Marshal(logoutPayload)
-		resp, err := http.Post(
-			server.BaseURL+"/auth/logout",
-			"application/json",
-			bytes.NewBuffer(reqBody),
-		)
+		req, err := http.NewRequest("POST", server.BaseURL+"/auth/logout", bytes.NewBuffer(reqBody))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -294,7 +298,7 @@ func TestManualAuthenticationFlowWithDatabaseValidation(t *testing.T) {
 		t.Logf("✅ Logout HTTP response: %d", resp.StatusCode)
 
 		// Verify session is removed from Redis
-		sessionExists := checkSessionInRedis(t, suite, refreshToken)
+		sessionExists := checkSessionInRedis(t, suite, accessToken)
 		assert.False(t, sessionExists, "Session should be removed from Redis")
 		t.Logf("✅ Session removed from Redis")
 	})
@@ -401,15 +405,50 @@ func getOTPFromRedis(t *testing.T, suite *TestSuite, phone string) string {
 	return val
 }
 
-func checkSessionInRedis(t *testing.T, suite *TestSuite, refreshToken string) bool {
+func extractSessionIDFromToken(t *testing.T, token string) string {
 	t.Helper()
 	
-	// Check for session keys (actual format without test prefix)
-	pattern := "session:*"
-	keys, err := suite.Redis.Keys(context.Background(), pattern).Result()
-	require.NoError(t, err)
+	// Parse JWT token without verification (just to extract claims for testing)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
 	
-	return len(keys) > 0
+	// Decode payload (second part)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	
+	// Parse claims
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	
+	// Extract session_id
+	if sessionID, ok := claims["session_id"].(string); ok {
+		return sessionID
+	}
+	
+	return ""
+}
+
+func checkSessionInRedis(t *testing.T, suite *TestSuite, accessToken string) bool {
+	t.Helper()
+	
+	// Extract session ID from JWT token
+	sessionID := extractSessionIDFromToken(t, accessToken)
+	if sessionID == "" {
+		return false
+	}
+	
+	// Check for the specific session key
+	sessionKey := fmt.Sprintf("session:%s", sessionID)
+	_, err := suite.Redis.Get(context.Background(), sessionKey).Result()
+	
+	// Return true if session exists (no error), false if it doesn't exist
+	return err == nil
 }
 
 func getMapKeys(m map[string]interface{}) []string {

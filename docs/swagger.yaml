@@ -1,0 +1,1723 @@
+openapi: 3.0.3
+info:
+  title: AuthzSvc - Enterprise Authentication & Authorization Service
+  description: |
+    **Production-ready authentication and authorization service** built with Clean Architecture and Hexagonal Pattern principles.
+    
+    ## Features
+    - **JWT-based authentication** with access/refresh token rotation
+    - **SMS OTP verification** via Twilio with rate limiting
+    - **Role-Based Access Control (RBAC)** with Casbin policy engine
+    - **Field-level authorization** with dynamic validation rules
+    - **Envoy Proxy integration** for external authorization
+    - **Session management** with Redis-based distributed storage
+    - **95%+ test coverage** with comprehensive security features
+    
+    ## Authentication Flow
+    1. **Register** user with email/phone
+    2. **Verify phone** via SMS OTP
+    3. **Login** to get JWT tokens
+    4. **Use access token** for API calls
+    5. **Refresh tokens** when expired
+    
+    ## Authorization System
+    - **Role inheritance**: admin inherits user permissions
+    - **Field validation**: `path.id==token.user_id` ensures ownership
+    - **Wildcard patterns**: `/api/users/*` for flexible routing
+    - **Runtime policy management** via admin endpoints
+    
+    ## Security
+    - **bcrypt password hashing** (configurable cost)
+    - **JWT session validation** with Redis
+    - **Rate limiting** on sensitive endpoints
+    - **Input validation** and SQL injection prevention
+    - **HTTPS/TLS enforcement** in production
+    
+    ## External Authorization
+    Native **Envoy Proxy** support for zero-trust microservices architecture.
+    All requests validated before reaching backend services.
+    
+    ---
+    
+    **Built with Go 1.22+, Clean Architecture, SOLID principles, and enterprise-grade security.**
+  version: 1.0.0
+  contact:
+    name: AuthzSvc Team
+    email: support@authzsvc.com
+    url: https://github.com/your-org/authzsvc
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: https://authzsvc.com/terms
+servers:
+  - url: http://localhost:8080
+    description: Development server
+  - url: https://auth.yourdomain.com
+    description: Production server
+  - url: http://localhost:8000
+    description: Envoy proxy (external authorization)
+
+tags:
+  - name: Authentication
+    description: User authentication endpoints (register, login, logout)
+  - name: OTP Verification
+    description: SMS OTP generation and verification
+  - name: Token Management
+    description: JWT token refresh and validation
+  - name: User Management
+    description: User profile and account management
+  - name: Admin - Policies
+    description: RBAC policy management (admin only)
+  - name: External Authorization
+    description: Envoy external authorization integration
+  - name: Health & Monitoring
+    description: Health checks and service monitoring
+
+paths:
+  # ===== AUTHENTICATION ENDPOINTS =====
+  /auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register new user
+      description: |
+        Register a new user with email, phone, and password. 
+        
+        **Phone verification required** before login is allowed.
+        
+        **Default role**: `user` (can be overridden by providing role field)
+        
+        **Rate limiting**: 10 requests per hour per IP
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            examples:
+              basic_user:
+                summary: Basic user registration
+                value:
+                  email: user@example.com
+                  password: SecurePass123!
+                  phone: "+1234567890"
+              admin_user:
+                summary: Admin user registration
+                value:
+                  email: admin@example.com
+                  password: AdminPass123!
+                  phone: "+1234567891"
+                  role: admin
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: "User registered successfully. Please verify your phone number."
+                      user_id:
+                        type: integer
+                        example: 1
+              examples:
+                success:
+                  summary: Successful registration
+                  value:
+                    data:
+                      message: "User registered successfully. Please verify your phone number."
+                      user_id: 1
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "User already exists"
+                code: 409
+                timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: User login
+      description: |
+        Authenticate user and receive JWT tokens.
+        
+        **Requirements**:
+        - Valid email and password
+        - Phone number must be verified
+        - Account must be active
+        
+        **Returns**:
+        - Access token (15min TTL)
+        - Refresh token (7 days TTL)  
+        - User profile information
+        
+        **Rate limiting**: 5 requests per 5 minutes per email
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              user_login:
+                summary: User login
+                value:
+                  email: user@example.com
+                  password: SecurePass123!
+              admin_login:
+                summary: Admin login
+                value:
+                  email: admin@example.com
+                  password: AdminPass123!
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AuthResult'
+              examples:
+                user_success:
+                  summary: Successful user login
+                  value:
+                    data:
+                      access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token_type: "Bearer"
+                      expires_in: 900
+                      user:
+                        id: 1
+                        email: "user@example.com"
+                        role: "user"
+                admin_success:
+                  summary: Successful admin login
+                  value:
+                    data:
+                      access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token_type: "Bearer"
+                      expires_in: 900
+                      user:
+                        id: 2
+                        email: "admin@example.com"
+                        role: "admin"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_credentials:
+                  summary: Wrong email or password
+                  value:
+                    error: "Invalid credentials"
+                    code: 401
+                    timestamp: "2024-01-15T10:30:00Z"
+        '403':
+          description: Account inactive or phone not verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                account_inactive:
+                  summary: Account is inactive
+                  value:
+                    error: "Account is inactive"
+                    code: 403
+                    timestamp: "2024-01-15T10:30:00Z"
+                phone_not_verified:
+                  summary: Phone number not verified
+                  value:
+                    error: "Phone number not verified"
+                    code: 403
+                    timestamp: "2024-01-15T10:30:00Z"
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: User logout
+      description: |
+        Logout user and invalidate session.
+        
+        **Actions performed**:
+        - Invalidate current session in Redis
+        - Access token becomes unusable
+        - Refresh token becomes unusable
+        
+        **Note**: Client should discard stored tokens
+      operationId: logoutUser
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: "Logged out successfully"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/me:
+    get:
+      tags: [User Management]
+      summary: Get current user profile
+      description: |
+        Get authenticated user's profile information.
+        
+        **Returns**:
+        - Complete user profile
+        - Account status
+        - Phone verification status
+        - Timestamps
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: User profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserProfile'
+              examples:
+                user_profile:
+                  summary: User profile
+                  value:
+                    data:
+                      id: 1
+                      email: "user@example.com"
+                      phone: "+1234567890"
+                      role: "user"
+                      is_active: true
+                      phone_verified: true
+                      created_at: "2024-01-15T10:30:00Z"
+                      updated_at: "2024-01-15T10:35:00Z"
+                admin_profile:
+                  summary: Admin profile
+                  value:
+                    data:
+                      id: 2
+                      email: "admin@example.com"
+                      phone: "+1234567891"
+                      role: "admin"
+                      is_active: true
+                      phone_verified: true
+                      created_at: "2024-01-15T09:00:00Z"
+                      updated_at: "2024-01-15T09:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "User not found"
+                code: 404
+                timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===== OTP VERIFICATION ENDPOINTS =====
+  /auth/otp/send:
+    post:
+      tags: [OTP Verification]
+      summary: Send OTP to phone
+      description: |
+        Generate and send OTP code via SMS to user's phone number.
+        
+        **Requirements**:
+        - Valid user ID and phone number
+        - Phone number must match user's registered phone
+        - User must exist in system
+        
+        **Rate limiting**: 3 requests per hour per phone number
+        
+        **OTP properties**:
+        - 6-digit numeric code (configurable)
+        - 5-minute expiration (configurable)
+        - Maximum 5 verification attempts
+        - 60-second resend window
+      operationId: sendOTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OTPSendRequest'
+            examples:
+              send_otp:
+                summary: Send OTP to user
+                value:
+                  phone: "+1234567890"
+                  user_id: 1
+      responses:
+        '200':
+          description: OTP sent successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: "OTP sent successfully"
+        '400':
+          description: Invalid request or phone number mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                phone_mismatch:
+                  summary: Phone number doesn't match user
+                  value:
+                    error: "Phone number does not match user"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "User not found"
+                code: 404
+                timestamp: "2024-01-15T10:30:00Z"
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/otp/verify:
+    post:
+      tags: [OTP Verification]
+      summary: Verify OTP code
+      description: |
+        Verify OTP code and activate user's phone number.
+        
+        **Requirements**:
+        - Valid user ID, phone number, and OTP code
+        - Phone number must match user's registered phone
+        - OTP must not be expired
+        - Must not exceed maximum attempts
+        
+        **On success**:
+        - Phone number is marked as verified
+        - User can now login
+        - OTP is invalidated
+        
+        **Audit logging**: All verification attempts are logged
+      operationId: verifyOTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OTPVerifyRequest'
+            examples:
+              verify_otp:
+                summary: Verify OTP code
+                value:
+                  phone: "+1234567890"
+                  code: "123456"
+                  user_id: 1
+      responses:
+        '200':
+          description: OTP verified successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: "Phone number verified and activated successfully"
+                      user_id:
+                        type: integer
+                        example: 1
+        '400':
+          description: Invalid OTP or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_otp:
+                  summary: Invalid OTP code
+                  value:
+                    error: "Invalid OTP code"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+                expired_otp:
+                  summary: OTP has expired
+                  value:
+                    error: "OTP has expired"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+                phone_mismatch:
+                  summary: Phone number doesn't match
+                  value:
+                    error: "Phone number does not match user"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+        '404':
+          description: OTP not found or user not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                otp_not_found:
+                  summary: OTP not found
+                  value:
+                    error: "OTP not found"
+                    code: 404
+                    timestamp: "2024-01-15T10:30:00Z"
+                user_not_found:
+                  summary: User not found
+                  value:
+                    error: "User not found"
+                    code: 404
+                    timestamp: "2024-01-15T10:30:00Z"
+        '429':
+          description: Maximum attempts exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Maximum attempts exceeded"
+                code: 429
+                timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===== TOKEN MANAGEMENT ENDPOINTS =====
+  /auth/refresh:
+    post:
+      tags: [Token Management]
+      summary: Refresh JWT tokens
+      description: |
+        Refresh access token using refresh token.
+        
+        **Security features (CB-179)**:
+        - **Token rotation**: New refresh token issued on each refresh
+        - **Session validation**: Ensures session exists in Redis
+        - **User status check**: Verifies user is still active
+        - **Old tokens invalidated**: Previous tokens become unusable
+        
+        **Token properties**:
+        - Access token: 15 minutes TTL (configurable)
+        - Refresh token: 7 days TTL (configurable)
+        - Unique JWT ID (jti) for each token
+      operationId: refreshTokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+            examples:
+              refresh_tokens:
+                summary: Refresh JWT tokens
+                value:
+                  refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+      responses:
+        '200':
+          description: Tokens refreshed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      access_token:
+                        type: string
+                        description: New access token
+                        example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      refresh_token:
+                        type: string
+                        description: New refresh token (CB-179 security rotation)
+                        example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token_type:
+                        type: string
+                        example: "Bearer"
+                      expires_in:
+                        type: integer
+                        description: Access token TTL in seconds
+                        example: 900
+              examples:
+                refresh_success:
+                  summary: Successful token refresh
+                  value:
+                    data:
+                      access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      token_type: "Bearer"
+                      expires_in: 900
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid or expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_token:
+                  summary: Invalid refresh token
+                  value:
+                    error: "Invalid or expired refresh token"
+                    code: 401
+                    timestamp: "2024-01-15T10:30:00Z"
+                session_expired:
+                  summary: Session expired
+                  value:
+                    error: "Session expired"
+                    code: 401
+                    timestamp: "2024-01-15T10:30:00Z"
+                user_inactive:
+                  summary: User account inactive
+                  value:
+                    error: "User account is inactive"
+                    code: 401
+                    timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===== ADMIN POLICY MANAGEMENT ENDPOINTS =====
+  /admin/policies:
+    get:
+      tags: [Admin - Policies]
+      summary: List all Casbin policies
+      description: |
+        Retrieve all authorization policies in the system.
+        
+        **Admin only endpoint**
+        
+        **Policy format**: `[subject, object, action, validation_rule]`
+        
+        **Policy types**:
+        - **Role policies**: `role_user`, `role_admin`
+        - **Path patterns**: `/api/users/*`, `/admin/*`
+        - **HTTP methods**: `GET`, `POST`, `(GET|POST)`
+        - **Validation rules**: `path.id==token.user_id`, `*`
+      operationId: listPolicies
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Policies retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 3
+                  maxItems: 4
+                  description: Policy array [subject, object, action, rule]
+              examples:
+                policies_list:
+                  summary: Current policies
+                  value:
+                    - ["role_admin", "/admin/*", "*", "*"]
+                    - ["role_user", "/auth/me", "GET", "*"]
+                    - ["role_user", "/auth/logout", "POST", "*"]
+                    - ["role_user", "/users/:id", "GET", "path.id==token.user_id"]
+                    - ["role_user", "/users/:id", "PUT", "path.id==token.user_id"]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags: [Admin - Policies]
+      summary: Add new Casbin policy
+      description: |
+        Add a new authorization policy to the system.
+        
+        **Admin only endpoint**
+        
+        **Policy components**:
+        - **Subject**: Role (e.g., `role_user`, `role_admin`)
+        - **Object**: Resource path with wildcards (e.g., `/api/posts/*`)
+        - **Action**: HTTP method or pattern (e.g., `GET`, `(GET|POST)`)
+        - **Rule**: Field validation (optional, e.g., `path.id==token.user_id`)
+        
+        **Examples**:
+        - Basic permission: `role_user, /profile, GET, *`
+        - Ownership validation: `role_user, /users/:id, GET, path.id==token.user_id`
+        - Admin access: `role_admin, /admin/*, *, *`
+      operationId: addPolicy
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyRequest'
+            examples:
+              basic_policy:
+                summary: Basic user permission
+                value:
+                  subject: "role_user"
+                  object: "/api/posts"
+                  action: "GET"
+                  rule: "*"
+              ownership_policy:
+                summary: Ownership validation
+                value:
+                  subject: "role_user"
+                  object: "/api/posts/:id"
+                  action: "PUT"
+                  rule: "path.id==token.user_id"
+              admin_policy:
+                summary: Admin wildcard access
+                value:
+                  subject: "role_admin"
+                  object: "/api/analytics/*"
+                  action: "(GET|POST)"
+                  rule: "*"
+              query_validation:
+                summary: Query parameter validation
+                value:
+                  subject: "role_user"
+                  object: "/api/orders/*"
+                  action: "GET"
+                  rule: "query.user_id==token.user_id"
+      responses:
+        '204':
+          description: Policy added successfully
+        '400':
+          description: Invalid policy or validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                empty_fields:
+                  summary: Empty required fields
+                  value:
+                    error: "subject, object, and action cannot be empty"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+                not_added:
+                  summary: Policy not added (duplicate or invalid)
+                  value:
+                    error: "not added"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [Admin - Policies]
+      summary: Remove Casbin policy
+      description: |
+        Remove an existing authorization policy from the system.
+        
+        **Admin only endpoint**
+        
+        **Requirements**:
+        - All policy components must match exactly
+        - Include rule field if the policy has one
+        - Policy must exist in the system
+        
+        **Caution**: Removing policies can affect user access immediately
+      operationId: removePolicy
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyRequest'
+            examples:
+              remove_basic:
+                summary: Remove basic policy
+                value:
+                  subject: "role_user"
+                  object: "/api/deprecated"
+                  action: "GET"
+              remove_with_rule:
+                summary: Remove policy with validation rule
+                value:
+                  subject: "role_user"
+                  object: "/api/posts/:id"
+                  action: "DELETE"
+                  rule: "path.id==token.user_id"
+      responses:
+        '204':
+          description: Policy removed successfully
+        '400':
+          description: Invalid policy or removal failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                empty_fields:
+                  summary: Empty required fields
+                  value:
+                    error: "subject, object, and action cannot be empty"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+                not_removed:
+                  summary: Policy not removed (not found)
+                  value:
+                    error: "not removed"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===== EXTERNAL AUTHORIZATION ENDPOINTS =====
+  /external/authz:
+    post:
+      tags: [External Authorization]
+      summary: Envoy external authorization
+      description: |
+        **Envoy Proxy External Authorization endpoint**
+        
+        This endpoint is called by Envoy Proxy to authorize requests before forwarding to backend services.
+        
+        **Process**:
+        1. **JWT validation**: Verify access token from Authorization header
+        2. **Session check**: Ensure session exists in Redis
+        3. **Policy evaluation**: Check Casbin policies for permission
+        4. **Field validation**: Validate request data against token claims
+        
+        **Request format**: Envoy ext_authz request structure
+        
+        **Response**:
+        - `200 OK`: Request authorized, forward to backend
+        - `401/403`: Request denied, return error to client
+        
+        **Headers added to backend requests**:
+        - `x-user-id`: User ID from token
+        - `x-user-role`: User role from token
+        - `x-session-id`: Session ID from token
+        
+        **Field validation examples**:
+        - `path.id==token.user_id`: User can only access their own data
+        - `query.tenant==token.tenant`: Multi-tenant access control
+        - `body.owner_id==token.user_id`: Resource ownership validation
+      operationId: externalAuthorize
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnvoyAuthzRequest'
+            examples:
+              valid_request:
+                summary: Valid user request
+                value:
+                  attributes:
+                    request:
+                      http:
+                        method: "GET"
+                        path: "/users/123"
+                        headers:
+                          authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                        query: ""
+                    source:
+                      address:
+                        socketAddress:
+                          address: "192.168.1.100"
+                          portValue: 54321
+              admin_request:
+                summary: Admin request
+                value:
+                  attributes:
+                    request:
+                      http:
+                        method: "POST"
+                        path: "/admin/policies"
+                        headers:
+                          authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                          content-type: "application/json"
+                        body: "eyJzdWJqZWN0IjoicGF0aF9pZCIsIm9iamVjdCI6IlVTRVIifQ=="
+              field_validation_request:
+                summary: Request with field validation
+                value:
+                  attributes:
+                    request:
+                      http:
+                        method: "PUT"
+                        path: "/users/123"
+                        headers:
+                          authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                        body: "eyJ1c2VyX2lkIjoxMjMsIm5hbWUiOiJKb2huIERvZSJ9"
+      responses:
+        '200':
+          description: Request authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvoyAuthzResponse'
+              examples:
+                authorized:
+                  summary: Authorization successful
+                  value:
+                    status:
+                      code: 200
+                    headers:
+                      x-user-id: "123"
+                      x-user-role: "user"
+                      x-session-id: "sess_abc123"
+        '400':
+          description: Invalid request format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Invalid request format"
+                details: "Missing required fields in request"
+                code: 400
+                timestamp: "2024-01-15T10:30:00Z"
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvoyAuthzResponse'
+              examples:
+                no_auth_header:
+                  summary: Missing authorization header
+                  value:
+                    status:
+                      code: 401
+                    body: '{"error": "Authorization header required"}'
+                invalid_token:
+                  summary: Invalid or expired token
+                  value:
+                    status:
+                      code: 401
+                    body: '{"error": "Invalid token"}'
+                session_invalid:
+                  summary: Session invalid or expired
+                  value:
+                    status:
+                      code: 401
+                    body: '{"error": "Session invalid or expired"}'
+        '403':
+          description: Authorization failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvoyAuthzResponse'
+              examples:
+                access_denied:
+                  summary: Access denied by policy
+                  value:
+                    status:
+                      code: 403
+                    body: '{"error": "Access denied"}'
+                field_validation_failed:
+                  summary: Field validation failed
+                  value:
+                    status:
+                      code: 403
+                    body: '{"error": "Field validation failed: Request values do not match token claims"}'
+        '500':
+          description: Authorization check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                authz_failed:
+                  summary: Authorization check failed
+                  value:
+                    error: "Authorization check failed"
+                    details: "Internal error during policy evaluation"
+                    code: 500
+                    timestamp: "2024-01-15T10:30:00Z"
+                field_validation_error:
+                  summary: Field validation error
+                  value:
+                    error: "Field validation failed"
+                    details: "Error extracting field values"
+                    code: 500
+                    timestamp: "2024-01-15T10:30:00Z"
+
+  /external/health:
+    get:
+      tags: [External Authorization]
+      summary: External authorization health check
+      description: |
+        Health check endpoint for external authorization service.
+        
+        Used by Envoy Proxy and monitoring systems to verify the external authorization service is operational.
+      operationId: externalHealth
+      responses:
+        '200':
+          description: External authorization service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  service:
+                    type: string
+                    example: "external-authz"
+                  version:
+                    type: string
+                    example: "1.0.0"
+              example:
+                status: "healthy"
+                service: "external-authz"
+                version: "1.0.0"
+
+  # ===== USER DATA ENDPOINT (DEMO) =====
+  /users/{id}:
+    get:
+      tags: [User Management]
+      summary: Get user data (field validation demo)
+      description: |
+        **Demo endpoint for field validation**
+        
+        This endpoint demonstrates SimpleCasbinMW field validation where users can only access their own data.
+        
+        **Policy**: `role_user, /users/:id, GET, path.id==token.user_id`
+        
+        **Behavior**:
+        - ✅ User ID 123 can access `/users/123`
+        - ❌ User ID 123 cannot access `/users/456`
+        - ✅ Admin can access any user data
+        
+        **Response**: Simplified user information for demonstration
+      operationId: getUserData
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: User ID to retrieve
+          schema:
+            type: integer
+            example: 123
+      responses:
+        '200':
+          description: User data retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "User data access successful"
+                  requested_user_id:
+                    type: string
+                    example: "123"
+                  current_user_id:
+                    type: integer
+                    example: 123
+                  note:
+                    type: string
+                    example: "This endpoint demonstrates SimpleCasbinMW field validation"
+              examples:
+                own_data:
+                  summary: User accessing own data
+                  value:
+                    message: "User data access successful"
+                    requested_user_id: "123"
+                    current_user_id: 123
+                    note: "This endpoint demonstrates SimpleCasbinMW field validation"
+                admin_access:
+                  summary: Admin accessing any user data
+                  value:
+                    message: "User data access successful"
+                    requested_user_id: "456"
+                    current_user_id: 2
+                    note: "This endpoint demonstrates SimpleCasbinMW field validation"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Field validation failed - cannot access other user's data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Field validation failed"
+                message: "path.id (456) does not match token.user_id (123)"
+                code: 403
+                timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===== HEALTH & MONITORING ENDPOINTS =====
+  /health:
+    get:
+      tags: [Health & Monitoring]
+      summary: Service health check
+      description: |
+        General health check endpoint for the authentication service.
+        
+        **Used by**:
+        - Load balancers
+        - Kubernetes liveness/readiness probes
+        - Monitoring systems
+        - Docker health checks
+        
+        **Response includes**:
+        - Service status
+        - Timestamp
+        - Uptime (if configured)
+        - Version (if available)
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  status:
+                    type: string
+                    example: "ok"
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2024-01-15T10:30:00Z"
+                  version:
+                    type: string
+                    example: "1.0.0"
+                  uptime:
+                    type: string
+                    example: "2h15m30s"
+              examples:
+                healthy:
+                  summary: Service healthy
+                  value:
+                    ok: true
+                    status: "ok"
+                    timestamp: "2024-01-15T10:30:00Z"
+                    version: "1.0.0"
+                    uptime: "2h15m30s"
+        '503':
+          description: Service unhealthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: false
+                  status:
+                    type: string
+                    example: "unhealthy"
+                  error:
+                    type: string
+                    example: "Database connection failed"
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2024-01-15T10:30:00Z"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT Bearer token authentication.
+        
+        **Format**: `Authorization: Bearer <access_token>`
+        
+        **Token structure**:
+        ```json
+        {
+          "user_id": 123,
+          "role": "user",
+          "session_id": "sess_abc123",
+          "iss": "authzsvc",
+          "iat": 1705320600,
+          "exp": 1705321500,
+          "jti": "unique-jwt-id"
+        }
+        ```
+        
+        **Security notes**:
+        - Tokens expire after 15 minutes (configurable)
+        - Session must exist in Redis for validation
+        - Use refresh endpoint before token expires
+
+  schemas:
+    # ===== REQUEST SCHEMAS =====
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - phone
+      properties:
+        email:
+          type: string
+          format: email
+          description: User's email address (must be unique)
+          example: user@example.com
+          pattern: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        password:
+          type: string
+          minLength: 6
+          description: Password (minimum 6 characters)
+          example: SecurePass123!
+          pattern: '^.{6,}$'
+        phone:
+          type: string
+          description: Phone number in international format
+          example: "+1234567890"
+          pattern: '^\+[1-9]\d{1,14}$'
+        role:
+          type: string
+          description: User role (optional, defaults to 'user')
+          example: user
+          enum: [user, admin, attendant]
+          default: user
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          description: User's email address
+          example: user@example.com
+        password:
+          type: string
+          description: User's password
+          example: SecurePass123!
+
+    OTPSendRequest:
+      type: object
+      required:
+        - phone
+        - user_id
+      properties:
+        phone:
+          type: string
+          description: Phone number to send OTP to
+          example: "+1234567890"
+          pattern: '^\+[1-9]\d{1,14}$'
+        user_id:
+          type: integer
+          description: User ID requesting OTP
+          example: 1
+          minimum: 1
+
+    OTPVerifyRequest:
+      type: object
+      required:
+        - phone
+        - code
+        - user_id
+      properties:
+        phone:
+          type: string
+          description: Phone number that received the OTP
+          example: "+1234567890"
+          pattern: '^\+[1-9]\d{1,14}$'
+        code:
+          type: string
+          description: 6-digit OTP code
+          example: "123456"
+          pattern: '^\d{6}$'
+        user_id:
+          type: integer
+          description: User ID verifying OTP
+          example: 1
+          minimum: 1
+
+    RefreshRequest:
+      type: object
+      required:
+        - refresh_token
+      properties:
+        refresh_token:
+          type: string
+          description: Valid refresh token
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+    PolicyRequest:
+      type: object
+      required:
+        - subject
+        - object
+        - action
+      properties:
+        subject:
+          type: string
+          description: Policy subject (role)
+          example: role_user
+          pattern: '^role_[a-zA-Z0-9_]+$'
+        object:
+          type: string
+          description: Resource path or pattern
+          example: "/api/posts/*"
+        action:
+          type: string
+          description: HTTP method or pattern
+          example: "GET"
+        rule:
+          type: string
+          description: Field validation rule (optional)
+          example: "path.id==token.user_id"
+
+    # ===== RESPONSE SCHEMAS =====
+    AuthResult:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: JWT access token (15min TTL)
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        refresh_token:
+          type: string
+          description: JWT refresh token (7 days TTL)
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        token_type:
+          type: string
+          description: Token type
+          example: "Bearer"
+        expires_in:
+          type: integer
+          description: Access token TTL in seconds
+          example: 900
+        user:
+          $ref: '#/components/schemas/UserInfo'
+
+    UserInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: User ID
+          example: 1
+        email:
+          type: string
+          format: email
+          description: User's email
+          example: "user@example.com"
+        role:
+          type: string
+          description: User's role
+          example: "user"
+          enum: [user, admin, attendant]
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: User ID
+          example: 1
+        email:
+          type: string
+          format: email
+          description: User's email
+          example: "user@example.com"
+        phone:
+          type: string
+          description: User's phone number
+          example: "+1234567890"
+        role:
+          type: string
+          description: User's role
+          example: "user"
+          enum: [user, admin, attendant]
+        is_active:
+          type: boolean
+          description: Account active status
+          example: true
+        phone_verified:
+          type: boolean
+          description: Phone verification status
+          example: true
+        created_at:
+          type: string
+          format: date-time
+          description: Account creation timestamp
+          example: "2024-01-15T10:30:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: Last update timestamp
+          example: "2024-01-15T10:35:00Z"
+
+    # ===== ENVOY EXTERNAL AUTHZ SCHEMAS =====
+    EnvoyAuthzRequest:
+      type: object
+      description: Envoy external authorization request format
+      properties:
+        attributes:
+          type: object
+          properties:
+            request:
+              type: object
+              properties:
+                http:
+                  type: object
+                  properties:
+                    method:
+                      type: string
+                      description: HTTP method
+                      example: "GET"
+                    path:
+                      type: string
+                      description: Request path
+                      example: "/users/123"
+                    headers:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: Request headers
+                      example:
+                        authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                        content-type: "application/json"
+                    body:
+                      type: string
+                      description: Request body (base64 encoded)
+                      example: "eyJ1c2VyX2lkIjoxMjN9"
+                    query:
+                      type: string
+                      description: Query string
+                      example: "limit=10&offset=0"
+            source:
+              type: object
+              properties:
+                address:
+                  type: object
+                  properties:
+                    socketAddress:
+                      type: object
+                      properties:
+                        address:
+                          type: string
+                          description: Client IP address
+                          example: "192.168.1.100"
+                        portValue:
+                          type: integer
+                          description: Client port
+                          example: 54321
+
+    EnvoyAuthzResponse:
+      type: object
+      description: Envoy external authorization response format
+      properties:
+        status:
+          type: object
+          properties:
+            code:
+              type: integer
+              description: HTTP status code
+              example: 200
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Headers to add to backend request
+          example:
+            x-user-id: "123"
+            x-user-role: "user"
+            x-session-id: "sess_abc123"
+        body:
+          type: string
+          description: Response body (for errors)
+          example: '{"error": "Access denied"}'
+
+    # ===== ERROR SCHEMAS =====
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error code or message
+          example: "invalid_credentials"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Invalid email or password"
+        code:
+          type: integer
+          description: HTTP status code
+          example: 401
+        timestamp:
+          type: string
+          format: date-time
+          description: Error timestamp
+          example: "2024-01-15T10:30:00Z"
+        request_id:
+          type: string
+          description: Request ID for tracing
+          example: "req_abc123"
+        details:
+          type: string
+          description: Additional error details
+          example: "Token validation failed: signature invalid"
+
+  responses:
+    # ===== COMMON ERROR RESPONSES =====
+    BadRequest:
+      description: Bad request - invalid input data
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            validation_error:
+              summary: Validation error
+              value:
+                error: "validation_failed"
+                message: "email: required field missing"
+                code: 400
+                timestamp: "2024-01-15T10:30:00Z"
+            invalid_format:
+              summary: Invalid format
+              value:
+                error: "invalid_format"
+                message: "phone number must be in international format"
+                code: 400
+                timestamp: "2024-01-15T10:30:00Z"
+
+    Unauthorized:
+      description: Unauthorized - authentication required or failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            missing_token:
+              summary: Missing authorization header
+              value:
+                error: "missing_authorization"
+                message: "Authorization header required"
+                code: 401
+                timestamp: "2024-01-15T10:30:00Z"
+            invalid_token:
+              summary: Invalid or expired token
+              value:
+                error: "invalid_token"
+                message: "Token expired or invalid"
+                code: 401
+                timestamp: "2024-01-15T10:30:00Z"
+
+    Forbidden:
+      description: Forbidden - insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            access_denied:
+              summary: Access denied
+              value:
+                error: "access_denied"
+                message: "Insufficient permissions for this operation"
+                code: 403
+                timestamp: "2024-01-15T10:30:00Z"
+            admin_required:
+              summary: Admin access required
+              value:
+                error: "admin_required"
+                message: "This endpoint requires admin privileges"
+                code: 403
+                timestamp: "2024-01-15T10:30:00Z"
+
+    TooManyRequests:
+      description: Too many requests - rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            rate_limit:
+              summary: Rate limit exceeded
+              value:
+                error: "rate_limit_exceeded"
+                message: "Too many requests. Please try again later."
+                code: 429
+                timestamp: "2024-01-15T10:30:00Z"
+            otp_limit:
+              summary: OTP rate limit
+              value:
+                error: "otp_rate_limit"
+                message: "Too many OTP requests. Please wait before requesting another."
+                code: 429
+                timestamp: "2024-01-15T10:30:00Z"
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            general_error:
+              summary: General server error
+              value:
+                error: "internal_server_error"
+                message: "An internal error occurred. Please try again later."
+                code: 500
+                timestamp: "2024-01-15T10:30:00Z"
+            database_error:
+              summary: Database connection error
+              value:
+                error: "database_error"
+                message: "Database connection failed"
+                code: 500
+                timestamp: "2024-01-15T10:30:00Z"
+
+# ===== EXAMPLES & DOCUMENTATION =====
+x-tagGroups:
+  - name: Core Authentication
+    tags:
+      - Authentication
+      - OTP Verification
+      - Token Management
+      - User Management
+  - name: Administration
+    tags:
+      - Admin - Policies
+  - name: Integration
+    tags:
+      - External Authorization
+  - name: Monitoring
+    tags:
+      - Health & Monitoring
+
+x-webhooks:
+  phone_verification_audit:
+    description: |
+      Audit log webhook for phone verification events.
+      
+      **Events logged**:
+      - Phone verification attempts
+      - Successful verifications
+      - Failed verifications
+      - OTP generation events
+    schema:
+      type: object
+      properties:
+        event_type:
+          type: string
+          enum: [phone_verified, phone_verification_failed, otp_generated]
+        user_id:
+          type: integer
+        phone:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        ip_address:
+          type: string
+        user_agent:
+          type: string
+
+  policy_changes_audit:
+    description: |
+      Audit log webhook for authorization policy changes.
+      
+      **Events logged**:
+      - Policy additions
+      - Policy removals
+      - Policy modifications
+      - Admin actions
+    schema:
+      type: object
+      properties:
+        event_type:
+          type: string
+          enum: [policy_added, policy_removed, policy_modified]
+        admin_user_id:
+          type: integer
+        policy:
+          type: array
+          items:
+            type: string
+        timestamp:
+          type: string
+          format: date-time
+        ip_address:
+          type: string
