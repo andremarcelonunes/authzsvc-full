@@ -115,6 +115,7 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 	// Initialize repositories
 	userRepo := repositories.NewUserRepository(suite.DB)
 	sessionRepo := repositories.NewSessionRepository(suite.Redis, suite.Config.RefreshTTL)
+	auditRepo := repositories.NewComprehensiveAuditRepository(suite.DB)
 
 	// Initialize services
 	otpConfig := services.OTPConfig{
@@ -131,8 +132,11 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 	// Initialize validation service mock for testing
 	requestValidator := mocks.NewMockRequestValidationService()
 	
-	// Initialize auth service
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis, requestValidator)
+	// Initialize audit service for CB-183 (minimal setup for testing)
+	auditSvc := services.NewComprehensiveAuditService(auditRepo, nil, nil, nil, nil, nil, suite.Config, nil)
+	
+	// Initialize auth service with audit logging
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis, requestValidator, auditSvc)
 
 	// Initialize handlers
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo)

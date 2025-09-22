@@ -86,3 +86,12 @@ var (
 	ErrRuleConflict          = errors.New("validation rule conflict detected")
 	ErrCustomValidatorNotFound = errors.New("custom validator not found")
 )
+
+// Audit errors
+var (
+	ErrAuditEventNotFound    = errors.New("audit event not found")
+	ErrAuditRepositoryError  = errors.New("audit repository error")
+	ErrAuditEncryptionFailed = errors.New("audit data encryption failed")
+	ErrAuditIntegrityFailed  = errors.New("audit integrity check failed")
+	ErrAuditExportFailed     = errors.New("audit export failed")
+)

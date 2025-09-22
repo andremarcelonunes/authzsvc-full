@@ -35,8 +35,9 @@ func CleanAllDatabaseTables(suite *TestSuite) error {
 
 	// List of tables to clean (in dependency order - dependent tables first)
 	tables := []string{
-		"casbin_rule", // Casbin policies
-		"users",       // User data
+		"comprehensive_audit_events", // CB-183 audit events
+		"casbin_rule",                // Casbin policies
+		"users",                      // User data
 		// Add additional tables as they are created
 	}
 

@@ -29,7 +29,7 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 
 	// Test user data
 	email := generateTestEmail()
-	phone := "+15551234567"
+	phone := fmt.Sprintf("+1555%07d", time.Now().UnixNano()%10000000) // Unique phone per test
 	password := "SecurePassword123!"
 
 	t.Run("complete user journey: register -> verify OTP -> login -> access protected -> refresh -> logout", func(t *testing.T) {

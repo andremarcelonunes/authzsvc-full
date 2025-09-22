@@ -32,7 +32,8 @@ func TestRefreshTokenConcurrency(t *testing.T) {
 
 	// Create service (without Redis and validation for testing)
 	requestValidator := mocks.NewMockRequestValidationService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator)
+	auditService := mocks.NewMockComprehensiveAuditService()
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator, auditService)
 
 	// Test concurrent refresh attempts
 	concurrency := 10
@@ -107,7 +108,8 @@ func TestRefreshTokenPerformance(t *testing.T) {
 
 	// Create service
 	requestValidator := mocks.NewMockRequestValidationService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator)
+	auditService := mocks.NewMockComprehensiveAuditService()
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator, auditService)
 
 	// Performance test
 	iterations := 1000
@@ -161,7 +163,8 @@ func TestRefreshTokenMemoryUsage(t *testing.T) {
 
 	// Create service
 	requestValidator := mocks.NewMockRequestValidationService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator)
+	auditService := mocks.NewMockComprehensiveAuditService()
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator, auditService)
 
 	// Memory usage test
 	iterations := 10000
@@ -206,7 +209,8 @@ func BenchmarkRefreshToken(b *testing.B) {
 
 	// Create service
 	requestValidator := mocks.NewMockRequestValidationService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator)
+	auditService := mocks.NewMockComprehensiveAuditService()
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator, auditService)
 
 	ctx := context.Background()
 

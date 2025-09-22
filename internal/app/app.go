@@ -34,6 +34,10 @@ func Run(cfg *config.Config) error {
 	// Initialize repositories
 	userRepo := repositories.NewUserRepository(gdb)
 	sessionRepo := repositories.NewSessionRepository(rdb, cfg.RefreshTTL)
+	auditRepo := repositories.NewComprehensiveAuditRepository(gdb)
+	
+	// Initialize audit service (CB-183)
+	auditSvc := services.NewComprehensiveAuditService(auditRepo, nil, nil, nil, nil, nil, cfg, nil)
 	
 	// Initialize services
 	otpConfig := services.OTPConfig{
@@ -47,7 +51,7 @@ func Run(cfg *config.Config) error {
 	// Initialize policy service
 	policySvc := services.NewPolicyService(cas.E)
 	
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, nil)
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, nil, auditSvc)
 	
 	// CB-182: Initialize validation services
 	log.Println("CB-182: Initializing validation system...")
