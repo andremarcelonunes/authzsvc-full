@@ -325,7 +325,8 @@ func BuildLegacyRouter(
 ) *gin.Engine {
 	// Use the original router implementation for backward compatibility
 	dh := handlers.NewSwaggerDocsHandler()
-	return BuildRouter(ah, ph, eh, dh, jwtmw, cb)
+	// Pass nil for password change handlers in legacy mode
+	return BuildRouter(ah, ph, eh, dh, nil, jwtmw, cb)
 }
 
 // DefaultMiddlewareConfig returns default configuration for all middleware

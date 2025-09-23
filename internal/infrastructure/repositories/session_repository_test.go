@@ -437,6 +437,337 @@ func TestSessionRepositoryImpl_NewSessionRepository(t *testing.T) {
 	}
 }
 
+func TestSessionRepositoryImpl_DeleteAllForUser(t *testing.T) {
+	tests := []struct {
+		name                  string
+		userID                uint
+		setupData             func(client *redis.Client) []*domain.Session
+		expectedDeletedCount  int
+		expectedError         error
+		validateRemainingData func(t *testing.T, client *redis.Client, allSessions []*domain.Session, userID uint)
+	}{
+		{
+			name:   "successful deletion of multiple user sessions",
+			userID: 1,
+			setupData: func(client *redis.Client) []*domain.Session {
+				sessions := []*domain.Session{
+					{ID: "user1_session1", UserID: 1, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+					{ID: "user1_session2", UserID: 1, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+					{ID: "user2_session1", UserID: 2, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+					{ID: "user1_session3", UserID: 1, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+					{ID: "user3_session1", UserID: 3, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+				}
+				
+				repo := NewSessionRepository(client, time.Hour)
+				for _, session := range sessions {
+					repo.Create(context.Background(), session)
+				}
+				
+				return sessions
+			},
+			expectedDeletedCount: 3, // user1_session1, user1_session2, user1_session3
+			expectedError:        nil,
+			validateRemainingData: func(t *testing.T, client *redis.Client, allSessions []*domain.Session, userID uint) {
+				repo := NewSessionRepository(client, time.Hour)
+				
+				// Check that user 1's sessions are deleted
+				for _, session := range allSessions {
+					_, err := repo.FindByID(context.Background(), session.ID)
+					if session.UserID == userID {
+						if err != domain.ErrSessionNotFound {
+							t.Errorf("expected session %s to be deleted, but found it", session.ID)
+						}
+					} else {
+						if err != nil {
+							t.Errorf("expected session %s to remain, but got error: %v", session.ID, err)
+						}
+					}
+				}
+			},
+		},
+		{
+			name:   "no sessions for user",
+			userID: 999,
+			setupData: func(client *redis.Client) []*domain.Session {
+				sessions := []*domain.Session{
+					{ID: "user1_session1", UserID: 1, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+					{ID: "user2_session1", UserID: 2, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+				}
+				
+				repo := NewSessionRepository(client, time.Hour)
+				for _, session := range sessions {
+					repo.Create(context.Background(), session)
+				}
+				
+				return sessions
+			},
+			expectedDeletedCount: 0,
+			expectedError:        nil,
+			validateRemainingData: func(t *testing.T, client *redis.Client, allSessions []*domain.Session, userID uint) {
+				repo := NewSessionRepository(client, time.Hour)
+				
+				// All sessions should remain
+				for _, session := range allSessions {
+					_, err := repo.FindByID(context.Background(), session.ID)
+					if err != nil {
+						t.Errorf("expected session %s to remain, but got error: %v", session.ID, err)
+					}
+				}
+			},
+		},
+		{
+			name:   "user with single session",
+			userID: 5,
+			setupData: func(client *redis.Client) []*domain.Session {
+				sessions := []*domain.Session{
+					{ID: "user5_session1", UserID: 5, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+					{ID: "user6_session1", UserID: 6, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+				}
+				
+				repo := NewSessionRepository(client, time.Hour)
+				for _, session := range sessions {
+					repo.Create(context.Background(), session)
+				}
+				
+				return sessions
+			},
+			expectedDeletedCount: 1,
+			expectedError:        nil,
+			validateRemainingData: func(t *testing.T, client *redis.Client, allSessions []*domain.Session, userID uint) {
+				repo := NewSessionRepository(client, time.Hour)
+				
+				for _, session := range allSessions {
+					_, err := repo.FindByID(context.Background(), session.ID)
+					if session.UserID == userID {
+						if err != domain.ErrSessionNotFound {
+							t.Errorf("expected session %s to be deleted, but found it", session.ID)
+						}
+					} else {
+						if err != nil {
+							t.Errorf("expected session %s to remain, but got error: %v", session.ID, err)
+						}
+					}
+				}
+			},
+		},
+		{
+			name:   "empty database",
+			userID: 1,
+			setupData: func(client *redis.Client) []*domain.Session {
+				// No sessions created
+				return []*domain.Session{}
+			},
+			expectedDeletedCount: 0,
+			expectedError:        nil,
+			validateRemainingData: func(t *testing.T, client *redis.Client, allSessions []*domain.Session, userID uint) {
+				// Nothing to validate for empty database
+			},
+		},
+		{
+			name:   "mixed expired and valid sessions",
+			userID: 7,
+			setupData: func(client *redis.Client) []*domain.Session {
+				sessions := []*domain.Session{
+					// Valid sessions
+					{ID: "user7_valid1", UserID: 7, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+					{ID: "user7_valid2", UserID: 7, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+					// Expired sessions (but still in Redis due to test timing)
+					{ID: "user7_expired1", UserID: 7, CreatedAt: time.Now().Add(-2*time.Hour), ExpiresAt: time.Now().Add(-time.Hour)},
+					// Other user sessions
+					{ID: "user8_session1", UserID: 8, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+				}
+				
+				repo := NewSessionRepository(client, time.Minute) // Shorter TTL for testing
+				for _, session := range sessions {
+					repo.Create(context.Background(), session)
+				}
+				
+				return sessions
+			},
+			expectedDeletedCount: 3, // All user 7 sessions (including expired ones)
+			expectedError:        nil,
+			validateRemainingData: func(t *testing.T, client *redis.Client, allSessions []*domain.Session, userID uint) {
+				repo := NewSessionRepository(client, time.Hour)
+				
+				for _, session := range allSessions {
+					_, err := repo.FindByID(context.Background(), session.ID)
+					if session.UserID == userID {
+						if err != domain.ErrSessionNotFound {
+							t.Errorf("expected session %s to be deleted, but found it", session.ID)
+						}
+					} else if session.UserID == 8 {
+						// User 8's session should remain
+						if err != nil {
+							t.Errorf("expected session %s to remain, but got error: %v", session.ID, err)
+						}
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup test Redis
+			client := setupTestRedis(t)
+			
+			// Setup test data
+			sessions := tt.setupData(client)
+			
+			// Create repository
+			repo := NewSessionRepository(client, time.Hour)
+			
+			// Execute test
+			err := repo.DeleteAllForUser(context.Background(), tt.userID)
+			
+			// Assert error
+			if tt.expectedError != nil {
+				if err == nil {
+					t.Errorf("expected error %v, got nil", tt.expectedError)
+				} else if err.Error() != tt.expectedError.Error() {
+					t.Errorf("expected error %v, got %v", tt.expectedError, err)
+				}
+				return
+			}
+			
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			
+			// Validate remaining data
+			tt.validateRemainingData(t, client, sessions, tt.userID)
+		})
+	}
+}
+
+func TestSessionRepositoryImpl_DeleteAllForUser_ConcurrentAccess(t *testing.T) {
+	// Test concurrent access scenarios
+	client := setupTestRedis(t)
+	repo := NewSessionRepository(client, time.Hour)
+	ctx := context.Background()
+	
+	// Create sessions for multiple users
+	userSessions := map[uint][]string{
+		1: {"u1s1", "u1s2", "u1s3"},
+		2: {"u2s1", "u2s2"},
+		3: {"u3s1"},
+	}
+	
+	// Create all sessions
+	for userID, sessionIDs := range userSessions {
+		for _, sessionID := range sessionIDs {
+			session := &domain.Session{
+				ID:        sessionID,
+				UserID:    userID,
+				CreatedAt: time.Now(),
+				ExpiresAt: time.Now().Add(time.Hour),
+			}
+			if err := repo.Create(ctx, session); err != nil {
+				t.Fatalf("failed to create session %s: %v", sessionID, err)
+			}
+		}
+	}
+	
+	// Delete all sessions for user 1
+	if err := repo.DeleteAllForUser(ctx, 1); err != nil {
+		t.Fatalf("failed to delete sessions for user 1: %v", err)
+	}
+	
+	// Verify user 1's sessions are deleted
+	for _, sessionID := range userSessions[1] {
+		if _, err := repo.FindByID(ctx, sessionID); err != domain.ErrSessionNotFound {
+			t.Errorf("expected session %s to be deleted", sessionID)
+		}
+	}
+	
+	// Verify other users' sessions remain
+	for userID, sessionIDs := range userSessions {
+		if userID == 1 {
+			continue
+		}
+		for _, sessionID := range sessionIDs {
+			if _, err := repo.FindByID(ctx, sessionID); err != nil {
+				t.Errorf("expected session %s to remain for user %d, got error: %v", sessionID, userID, err)
+			}
+		}
+	}
+}
+
+func TestSessionRepositoryImpl_DeleteAllForUser_ErrorHandling(t *testing.T) {
+	tests := []struct {
+		name      string
+		userID    uint
+		setupData func(client *redis.Client)
+	}{
+		{
+			name:   "handle corrupted session data gracefully",
+			userID: 1,
+			setupData: func(client *redis.Client) {
+				// Create a valid session
+				session := &domain.Session{
+					ID:        "valid_session",
+					UserID:    1,
+					CreatedAt: time.Now(),
+					ExpiresAt: time.Now().Add(time.Hour),
+				}
+				repo := NewSessionRepository(client, time.Hour)
+				repo.Create(context.Background(), session)
+				
+				// Manually add corrupted data
+				client.Set(context.Background(), "session:corrupted", "invalid-json", time.Hour)
+				
+				// Add another valid session
+				session2 := &domain.Session{
+					ID:        "valid_session2",
+					UserID:    1,
+					CreatedAt: time.Now(),
+					ExpiresAt: time.Now().Add(time.Hour),
+				}
+				repo.Create(context.Background(), session2)
+			},
+		},
+		{
+			name:   "handle zero user ID",
+			userID: 0,
+			setupData: func(client *redis.Client) {
+				// Create sessions for user 0 and other users
+				sessions := []*domain.Session{
+					{ID: "user0_session1", UserID: 0, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+					{ID: "user1_session1", UserID: 1, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)},
+				}
+				
+				repo := NewSessionRepository(client, time.Hour)
+				for _, session := range sessions {
+					repo.Create(context.Background(), session)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup test Redis
+			client := setupTestRedis(t)
+			
+			// Setup test data
+			tt.setupData(client)
+			
+			// Create repository
+			repo := NewSessionRepository(client, time.Hour)
+			
+			// Execute test - should not panic or return error despite corrupted data
+			err := repo.DeleteAllForUser(context.Background(), tt.userID)
+			
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			
+			// Method should complete successfully even with corrupted data
+		})
+	}
+}
+
 func TestSessionRepositoryImpl_Integration(t *testing.T) {
 	// Integration test covering complete session lifecycle
 	client := setupTestRedis(t)

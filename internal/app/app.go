@@ -36,6 +36,11 @@ func Run(cfg *config.Config) error {
 	sessionRepo := repositories.NewSessionRepository(rdb, cfg.RefreshTTL)
 	auditRepo := repositories.NewComprehensiveAuditRepository(gdb)
 	
+	// Initialize password management repositories
+	passwordChangeRepo := repositories.NewPasswordChangeRepository(gdb)
+	passwordHistoryRepo := repositories.NewPasswordHistoryRepository(gdb)
+	forgotPasswordRepo := repositories.NewForgotPasswordRepository(gdb)
+	
 	// Initialize audit service (CB-183)
 	auditSvc := services.NewComprehensiveAuditService(auditRepo, nil, nil, nil, nil, nil, cfg, nil)
 	
@@ -52,6 +57,24 @@ func Run(cfg *config.Config) error {
 	policySvc := services.NewPolicyService(cas.E)
 	
 	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, nil, auditSvc)
+	
+	// Initialize password change service with proper security defaults
+	passwordChangeConfig := services.DefaultPasswordChangeConfig()
+	// Override specific values with environment config
+	passwordChangeConfig.RequestTTL = cfg.OTP_TTL
+	passwordChangeConfig.RateLimitWindow = cfg.OTP_ResendWindow
+	passwordChangeConfig.MaxRequestsPerWindow = 5
+	passwordChangeConfig.PasswordHistoryCount = 5
+	passwordChangeSvc := services.NewPasswordChangeService(
+		passwordChangeRepo,
+		passwordHistoryRepo,
+		forgotPasswordRepo,
+		userRepo,
+		passwordSvc,
+		otpSvc,
+		sessionRepo,
+		passwordChangeConfig,
+	)
 	
 	// CB-182: Initialize validation services
 	log.Println("CB-182: Initializing validation system...")
@@ -173,6 +196,7 @@ func Run(cfg *config.Config) error {
 	polH := &handlers.PolicyHandlers{E: cas.E}
 	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E)
 	docsH := handlers.NewSwaggerDocsHandler()
+	passwordChangeH := handlers.NewPasswordChangeHandlers(passwordChangeSvc)
 	
 	// Initialize middleware
 	jwtMW := middleware.NewAuthMW(tokenSvc, sessionRepo)
@@ -188,7 +212,7 @@ func Run(cfg *config.Config) error {
 	}
 	
 	// Build router with CB-182 validation middleware
-	r := httpx.BuildRouterWithValidation(authH, polH, externalAuthzH, docsH, jwtMW, casbinMW, validationMW)
+	r := httpx.BuildRouterWithValidation(authH, polH, externalAuthzH, docsH, passwordChangeH, jwtMW, casbinMW, validationMW)
 
 	policies, _ := cas.E.GetPolicy()
 	if len(policies) == 0 {
@@ -198,6 +222,13 @@ func Run(cfg *config.Config) error {
 		cas.E.AddPolicy("role_user", "/auth/logout", "POST", "*")
 		cas.E.AddPolicy("role_user", "/auth/otp/*", "POST", "*")
 		cas.E.AddPolicy("role_user", "/users/*", "GET", "path.id==token.user_id")
+		
+		// Password management permissions for authenticated users
+		cas.E.AddPolicy("role_user", "/api/v1/password-changes", "POST", "*")
+		cas.E.AddPolicy("role_user", "/api/v1/password-changes", "GET", "*")
+		cas.E.AddPolicy("role_user", "/api/v1/password-changes/*", "GET", "*")
+		cas.E.AddPolicy("role_user", "/api/v1/password-changes/*/verification", "PUT", "*")
+		cas.E.AddPolicy("role_user", "/api/v1/password-changes/*", "DELETE", "*")
 		
 		// Define admin-specific permissions
 		cas.E.AddPolicy("role_admin", "/admin/*", "(GET|POST|PUT|DELETE)", "*")

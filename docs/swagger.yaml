@@ -70,6 +70,8 @@ tags:
     description: RBAC policy management (admin only)
   - name: External Authorization
     description: Envoy external authorization integration
+  - name: Password Management
+    description: Password change and recovery operations
   - name: Health & Monitoring
     description: Health checks and service monitoring
 
