@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 // Test helpers
 func createTestPasswordChangeHandlers(t *testing.T) (*PasswordChangeHandlers, *mocks.MockPasswordChangeRepository, *mocks.MockPasswordHistoryRepository, *mocks.MockForgotPasswordRepository, *mocks.MockUserRepository, *mocks.MockPasswordService, *mocks.MockOTPService, *mocks.MockSessionRepository) {
 	t.Helper()
-	
+
 	// Create mocks
 	passwordChangeRepo := mocks.NewMockPasswordChangeRepository()
 	passwordHistoryRepo := mocks.NewMockPasswordHistoryRepository()
@@ -28,21 +29,21 @@ func createTestPasswordChangeHandlers(t *testing.T) (*PasswordChangeHandlers, *m
 	passwordService := mocks.NewMockPasswordService()
 	otpService := mocks.NewMockOTPService()
 	sessionRepo := mocks.NewMockSessionRepository()
-	
+
 	// Create service with mocks - using interface approach
 	service := &services.PasswordChangeService{}
-	
+
 	// Create handlers
 	handlers := NewPasswordChangeHandlers(service)
-	
+
 	return handlers, passwordChangeRepo, passwordHistoryRepo, forgotPasswordRepo, userRepo, passwordService, otpService, sessionRepo
 }
 
 func createGinContextForTest(t *testing.T, method, path string, body interface{}, userID uint) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
-	
+
 	gin.SetMode(gin.TestMode)
-	
+
 	// Prepare request body
 	var bodyBytes []byte
 	if body != nil {
@@ -52,24 +53,24 @@ func createGinContextForTest(t *testing.T, method, path string, body interface{}
 			t.Fatalf("Failed to marshal request body: %v", err)
 		}
 	}
-	
+
 	// Create request
 	req := httptest.NewRequest(method, path, bytes.NewBuffer(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Test-Agent/1.0")
-	
+
 	// Create response recorder
 	w := httptest.NewRecorder()
-	
+
 	// Create gin context
 	c, _ := gin.CreateTestContext(w)
 	c.Request = req
-	
+
 	// Set user ID in context (simulating JWT middleware)
 	if userID > 0 {
 		c.Set("user_id", userID)
 	}
-	
+
 	return c, w
 }
 
@@ -382,13 +383,13 @@ type PasswordChangeServiceInterface interface {
 
 // MockPasswordChangeService for testing handlers
 type MockPasswordChangeService struct {
-	InitiatePasswordChangeFunc      func(ctx context.Context, userID uint, currentPassword, newPassword, confirmPassword, ipAddress, userAgent string) (*domain.PasswordChangeResponse, error)
-	CompletePasswordChangeFunc      func(ctx context.Context, userID uint, requestID, otpCode, nonce string) (*domain.PasswordChangeResponse, error)
-	GetPasswordChangeStatusFunc     func(ctx context.Context, userID uint, requestID string) (*domain.PasswordChangeStatusResponse, error)
-	CancelPasswordChangeFunc       func(ctx context.Context, userID uint, requestID string) (*domain.PasswordChangeResponse, error)
-	GetPasswordChangeHistoryFunc   func(ctx context.Context, userID uint, limit int) (*domain.PasswordChangeHistoryResponse, error)
-	InitiateForgotPasswordFunc     func(ctx context.Context, email, phone, ipAddress, userAgent string) (*domain.PasswordChangeResponse, error)
-	CompleteForgotPasswordFunc     func(ctx context.Context, requestID, otpCode, nonce, newPassword, confirmPassword string) (*domain.PasswordChangeResponse, error)
+	InitiatePasswordChangeFunc   func(ctx context.Context, userID uint, currentPassword, newPassword, confirmPassword, ipAddress, userAgent string) (*domain.PasswordChangeResponse, error)
+	CompletePasswordChangeFunc   func(ctx context.Context, userID uint, requestID, otpCode, nonce string) (*domain.PasswordChangeResponse, error)
+	GetPasswordChangeStatusFunc  func(ctx context.Context, userID uint, requestID string) (*domain.PasswordChangeStatusResponse, error)
+	CancelPasswordChangeFunc     func(ctx context.Context, userID uint, requestID string) (*domain.PasswordChangeResponse, error)
+	GetPasswordChangeHistoryFunc func(ctx context.Context, userID uint, limit int) (*domain.PasswordChangeHistoryResponse, error)
+	InitiateForgotPasswordFunc   func(ctx context.Context, email, phone, ipAddress, userAgent string) (*domain.PasswordChangeResponse, error)
+	CompleteForgotPasswordFunc   func(ctx context.Context, requestID, otpCode, nonce, newPassword, confirmPassword string) (*domain.PasswordChangeResponse, error)
 }
 
 func (m *MockPasswordChangeService) InitiatePasswordChange(ctx context.Context, userID uint, currentPassword, newPassword, confirmPassword, ipAddress, userAgent string) (*domain.PasswordChangeResponse, error) {
@@ -525,7 +526,11 @@ func TestPasswordChangeHandlers_InitiatePasswordChange(t *testing.T) {
 		{
 			name:              "missing user ID in context",
 			userID:            0, // No user ID set
-			requestBody:       domain.PasswordChangeInitiateRequest{},
+			requestBody: domain.PasswordChangeInitiateRequest{
+				CurrentPassword: "currentPassword",
+				NewPassword:     "NewPassword123",
+				ConfirmPassword: "NewPassword123",
+			},
 			setupServiceMock:  func(service *MockPasswordChangeService) {},
 			expectedStatus:    http.StatusUnauthorized,
 			expectedErrorCode: "user_not_authenticated",
@@ -585,34 +590,34 @@ func TestPasswordChangeHandlers_InitiatePasswordChange(t *testing.T) {
 			// Create mock service
 			mockService := createMockPasswordChangeService(t)
 			tt.setupServiceMock(mockService)
-			
+
 			// Create test handlers with mock service
 			handlers := &TestPasswordChangeHandlers{service: mockService}
-			
+
 			// Create test context
 			c, w := createGinContextForTest(t, "POST", "/api/v1/password-changes", tt.requestBody, tt.userID)
-			
+
 			// Execute handler
 			handlers.InitiatePasswordChange(c)
-			
+
 			// Assert status code
 			if w.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
-			
+
 			// Parse response
 			var response map[string]interface{}
 			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 				t.Fatalf("failed to unmarshal response: %v", err)
 			}
-			
+
 			// Assert response structure
 			if tt.expectedSuccessKey != "" {
 				if _, exists := response[tt.expectedSuccessKey]; !exists {
 					t.Errorf("expected response to contain key %s", tt.expectedSuccessKey)
 				}
 			}
-			
+
 			if tt.expectedErrorCode != "" {
 				if errorField, exists := response["error"]; exists {
 					if errorField != tt.expectedErrorCode {
@@ -687,10 +692,13 @@ func TestPasswordChangeHandlers_CompletePasswordChange(t *testing.T) {
 			expectedErrorCode: "invalid_request_format",
 		},
 		{
-			name:              "missing user ID in context",
-			userID:            0, // No user ID set
-			requestID:         "550e8400-e29b-41d4-a716-446655440000",
-			requestBody:       domain.PasswordChangeCompleteRequest{},
+			name:      "missing user ID in context",
+			userID:    0, // No user ID set
+			requestID: "550e8400-e29b-41d4-a716-446655440000",
+			requestBody: domain.PasswordChangeCompleteRequest{
+				OTPCode: "123456",
+				Nonce:   "test-nonce",
+			},
 			setupServiceMock:  func(service *MockPasswordChangeService) {},
 			expectedStatus:    http.StatusUnauthorized,
 			expectedErrorCode: "user_not_authenticated",
@@ -750,38 +758,38 @@ func TestPasswordChangeHandlers_CompletePasswordChange(t *testing.T) {
 			// Create mock service
 			mockService := createMockPasswordChangeService(t)
 			tt.setupServiceMock(mockService)
-			
+
 			// Create test handlers with mock service
 			handlers := &TestPasswordChangeHandlers{service: mockService}
-			
+
 			// Create test context
 			path := "/api/v1/password-changes/" + tt.requestID + "/verification"
 			c, w := createGinContextForTest(t, "PUT", path, tt.requestBody, tt.userID)
-			
+
 			// Set URL param
 			c.Params = gin.Params{{Key: "id", Value: tt.requestID}}
-			
+
 			// Execute handler
 			handlers.CompletePasswordChange(c)
-			
+
 			// Assert status code
 			if w.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
-			
+
 			// Parse response
 			var response map[string]interface{}
 			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 				t.Fatalf("failed to unmarshal response: %v", err)
 			}
-			
+
 			// Assert response structure
 			if tt.expectedSuccessKey != "" {
 				if _, exists := response[tt.expectedSuccessKey]; !exists {
 					t.Errorf("expected response to contain key %s", tt.expectedSuccessKey)
 				}
 			}
-			
+
 			if tt.expectedErrorCode != "" {
 				if errorField, exists := response["error"]; exists {
 					if errorField != tt.expectedErrorCode {
@@ -866,38 +874,38 @@ func TestPasswordChangeHandlers_GetPasswordChangeStatus(t *testing.T) {
 			// Create mock service
 			mockService := createMockPasswordChangeService(t)
 			tt.setupServiceMock(mockService)
-			
+
 			// Create test handlers with mock service
 			handlers := &TestPasswordChangeHandlers{service: mockService}
-			
+
 			// Create test context
 			path := "/api/v1/password-changes/" + tt.requestID
 			c, w := createGinContextForTest(t, "GET", path, nil, tt.userID)
-			
+
 			// Set URL param
 			c.Params = gin.Params{{Key: "id", Value: tt.requestID}}
-			
+
 			// Execute handler
 			handlers.GetPasswordChangeStatus(c)
-			
+
 			// Assert status code
 			if w.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
-			
+
 			// Parse response
 			var response map[string]interface{}
 			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 				t.Fatalf("failed to unmarshal response: %v", err)
 			}
-			
+
 			// Assert response structure
 			if tt.expectedSuccessKey != "" {
 				if _, exists := response[tt.expectedSuccessKey]; !exists {
 					t.Errorf("expected response to contain key %s", tt.expectedSuccessKey)
 				}
 			}
-			
+
 			if tt.expectedErrorCode != "" {
 				if errorField, exists := response["error"]; exists {
 					if errorField != tt.expectedErrorCode {
@@ -993,14 +1001,14 @@ func TestPasswordChangeHandlers_GetPasswordChangeHistory(t *testing.T) {
 			// Create mock service
 			mockService := createMockPasswordChangeService(t)
 			tt.setupServiceMock(mockService)
-			
+
 			// Create test handlers with mock service
 			handlers := &TestPasswordChangeHandlers{service: mockService}
-			
+
 			// Create test context
 			path := "/api/v1/password-changes"
 			c, w := createGinContextForTest(t, "GET", path, nil, tt.userID)
-			
+
 			// Set query parameters
 			if tt.queryParams != nil {
 				q := c.Request.URL.Query()
@@ -1009,28 +1017,28 @@ func TestPasswordChangeHandlers_GetPasswordChangeHistory(t *testing.T) {
 				}
 				c.Request.URL.RawQuery = q.Encode()
 			}
-			
+
 			// Execute handler
 			handlers.GetPasswordChangeHistory(c)
-			
+
 			// Assert status code
 			if w.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
-			
+
 			// Parse response
 			var response map[string]interface{}
 			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 				t.Fatalf("failed to unmarshal response: %v", err)
 			}
-			
+
 			// Assert response structure
 			if tt.expectedSuccessKey != "" {
 				if _, exists := response[tt.expectedSuccessKey]; !exists {
 					t.Errorf("expected response to contain key %s", tt.expectedSuccessKey)
 				}
 			}
-			
+
 			if tt.expectedErrorCode != "" {
 				if errorField, exists := response["error"]; exists {
 					if errorField != tt.expectedErrorCode {
@@ -1103,34 +1111,34 @@ func TestPasswordChangeHandlers_InitiateForgotPassword(t *testing.T) {
 			// Create mock service
 			mockService := createMockPasswordChangeService(t)
 			tt.setupServiceMock(mockService)
-			
+
 			// Create test handlers with mock service
 			handlers := &TestPasswordChangeHandlers{service: mockService}
-			
+
 			// Create test context (no user ID needed for forgot password)
 			c, w := createGinContextForTest(t, "POST", "/api/v1/password-reset", tt.requestBody, 0)
-			
+
 			// Execute handler
 			handlers.InitiateForgotPassword(c)
-			
+
 			// Assert status code
 			if w.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
-			
+
 			// Parse response
 			var response map[string]interface{}
 			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 				t.Fatalf("failed to unmarshal response: %v", err)
 			}
-			
+
 			// Assert response structure
 			if tt.expectedSuccessKey != "" {
 				if _, exists := response[tt.expectedSuccessKey]; !exists {
 					t.Errorf("expected response to contain key %s", tt.expectedSuccessKey)
 				}
 			}
-			
+
 			if tt.expectedErrorCode != "" {
 				if errorField, exists := response["error"]; exists {
 					if errorField != tt.expectedErrorCode {
@@ -1147,52 +1155,52 @@ func TestPasswordChangeHandlers_InitiateForgotPassword(t *testing.T) {
 // Test helper functions
 func TestExtractUserID(t *testing.T) {
 	tests := []struct {
-		name        string
+		name         string
 		contextValue interface{}
-		expectedID  uint
-		expectedErr string
+		expectedID   uint
+		expectedErr  string
 	}{
 		{
-			name:        "valid uint user ID",
+			name:         "valid uint user ID",
 			contextValue: uint(123),
-			expectedID:  123,
-			expectedErr: "",
+			expectedID:   123,
+			expectedErr:  "",
 		},
 		{
-			name:        "valid float64 user ID",
+			name:         "valid float64 user ID",
 			contextValue: float64(456),
-			expectedID:  456,
-			expectedErr: "",
+			expectedID:   456,
+			expectedErr:  "",
 		},
 		{
-			name:        "valid int user ID",
+			name:         "valid int user ID",
 			contextValue: int(789),
-			expectedID:  789,
-			expectedErr: "",
+			expectedID:   789,
+			expectedErr:  "",
 		},
 		{
-			name:        "valid string user ID",
+			name:         "valid string user ID",
 			contextValue: "999",
-			expectedID:  999,
-			expectedErr: "",
+			expectedID:   999,
+			expectedErr:  "",
 		},
 		{
-			name:        "invalid string user ID",
+			name:         "invalid string user ID",
 			contextValue: "invalid",
-			expectedID:  0,
-			expectedErr: domain.ErrInvalidUserID.Error(),
+			expectedID:   0,
+			expectedErr:  domain.ErrInvalidUserID.Error(),
 		},
 		{
-			name:        "invalid type",
+			name:         "invalid type",
 			contextValue: []string{"invalid"},
-			expectedID:  0,
-			expectedErr: domain.ErrInvalidUserID.Error(),
+			expectedID:   0,
+			expectedErr:  domain.ErrInvalidUserID.Error(),
 		},
 		{
-			name:        "missing user ID",
+			name:         "missing user ID",
 			contextValue: nil, // Simulates missing context key
-			expectedID:  0,
-			expectedErr: "user ID not found in token",
+			expectedID:   0,
+			expectedErr:  "user ID not found in token",
 		},
 	}
 
@@ -1200,14 +1208,14 @@ func TestExtractUserID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
-			
+
 			// Set user ID in context only if not nil
 			if tt.contextValue != nil {
 				c.Set("user_id", tt.contextValue)
 			}
-			
+
 			userID, err := extractUserID(c)
-			
+
 			if tt.expectedErr != "" {
 				if err == nil {
 					t.Errorf("expected error %s, got nil", tt.expectedErr)
@@ -1219,7 +1227,7 @@ func TestExtractUserID(t *testing.T) {
 					t.Errorf("expected no error, got %v", err)
 				}
 			}
-			
+
 			if userID != tt.expectedID {
 				t.Errorf("expected user ID %d, got %d", tt.expectedID, userID)
 			}
@@ -1268,7 +1276,7 @@ func TestValidateUUID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateUUID(tt.uuid)
-			
+
 			if tt.expectedErr != nil {
 				if err == nil {
 					t.Errorf("expected error %v, got nil", tt.expectedErr)

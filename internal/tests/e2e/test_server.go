@@ -142,6 +142,40 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo)
 	polH := &handlers.PolicyHandlers{E: cas.E}
 	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E)
+	
+	// Initialize password change service and handlers
+	passwordChangeRepo := repositories.NewPasswordChangeRepository(suite.DB)
+	passwordHistoryRepo := repositories.NewPasswordHistoryRepository(suite.DB)
+	forgotPasswordRepo := repositories.NewForgotPasswordRepository(suite.DB)
+	
+	// Create password change config from main config
+	passwordChangeConfig := services.PasswordChangeConfig{
+		RequestTTL:               15 * time.Minute,
+		OTPTTL:                  5 * time.Minute,
+		MaxOTPAttempts:          3,
+		PasswordHistoryCount:    5,
+		RateLimitWindow:         time.Hour,
+		MaxRequestsPerWindow:    3,
+		ForgotPasswordRateLimit: 5,
+		MinPasswordLength:       8,
+		RequireUppercase:        true,
+		RequireLowercase:        true,
+		RequireNumbers:          true,
+		RequireSpecialChars:     true,
+		ForbiddenPasswords:      []string{"password", "123456", "qwerty"},
+	}
+	
+	passwordChangeSvc := services.NewPasswordChangeService(
+		passwordChangeRepo,
+		passwordHistoryRepo,
+		forgotPasswordRepo,
+		userRepo,
+		passwordSvc,
+		otpSvc,
+		sessionRepo,
+		passwordChangeConfig,
+	)
+	passwordChangeH := handlers.NewPasswordChangeHandlers(passwordChangeSvc)
 
 	// Initialize middleware
 	jwtMW := middleware.NewAuthMW(tokenSvc, sessionRepo)
@@ -149,7 +183,7 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 
 	// Build and return router
 	docsH := handlers.NewSwaggerDocsHandler()
-	router := httpx.BuildRouter(authH, polH, externalAuthzH, docsH, jwtMW, casbinMW)
+	router := httpx.BuildRouter(authH, polH, externalAuthzH, docsH, passwordChangeH, jwtMW, casbinMW)
 
 	// Always clear and re-seed policies for consistent test environment
 	// Clear both in-memory and database policies

@@ -45,6 +45,14 @@ func createDefaultTestConfig(t *testing.T) PasswordChangeConfig {
 	}
 }
 
+func createPasswordConfigWithForbidden(t *testing.T, forbidden []string) PasswordChangeConfig {
+	t.Helper()
+	
+	config := createDefaultTestConfig(t)
+	config.ForbiddenPasswords = forbidden
+	return config
+}
+
 func TestPasswordChangeService_validatePasswordStrength(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -90,9 +98,9 @@ func TestPasswordChangeService_validatePasswordStrength(t *testing.T) {
 		},
 		{
 			name:     "forbidden password",
-			password: "password",
+			password: "Password123", // Password123 will be in forbidden list
 			email:    "user@example.com",
-			config:   createDefaultTestConfig(t),
+			config:   createPasswordConfigWithForbidden(t, []string{"Password123"}),
 			expectedError: domain.ErrPasswordCommonlyUsed,
 		},
 		{
@@ -126,9 +134,9 @@ func TestPasswordChangeService_validatePasswordStrength(t *testing.T) {
 		},
 		{
 			name:     "case insensitive forbidden password check",
-			password: "PASSWORD",
+			password: "TestPassword123", // Will match "testpassword123" in forbidden list case-insensitively
 			email:    "user@example.com",
-			config:   createDefaultTestConfig(t),
+			config:   createPasswordConfigWithForbidden(t, []string{"testpassword123"}),
 			expectedError: domain.ErrPasswordCommonlyUsed,
 		},
 		{
@@ -245,7 +253,7 @@ func TestPasswordChangeService_checkPasswordHistory(t *testing.T) {
 			config := createDefaultTestConfig(t)
 			
 			// Test the method logic by setting up the service with the required dependencies
-			service := &PasswordChangeService{
+			_ = &PasswordChangeService{
 				config: config,
 			}
 			
@@ -395,12 +403,12 @@ func TestPasswordChangeService_checkForgotPasswordRateLimit(t *testing.T) {
 			tt.setupMocks(forgotPasswordRepo)
 
 			// Create service for testing forgot password rate limit logic
-			config := createDefaultTestConfig(t)
+			_ = createDefaultTestConfig(t)
 			
 			// Manually test the forgot password rate limit logic
 			var err error
 			since := time.Now().Add(-time.Hour)
-			count, repoErr := forgotPasswordRepo.CountRecentByIP(context.Background(), tt.ipAddress, since)
+			_, repoErr := forgotPasswordRepo.CountRecentByIP(context.Background(), tt.ipAddress, since)
 			if repoErr != nil {
 				err = fmt.Errorf("failed to check rate limit: %w", repoErr)
 			}
