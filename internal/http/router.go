@@ -65,26 +65,26 @@ func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers,
 
 	// Password management endpoints (authenticated users only)
 	if pch != nil {
-		api := v.Group("/api/v1")
+		password := v.Group("/password")
 		
 		// Password change endpoints (require authentication)
-		api.POST("/password-changes", pch.InitiatePasswordChange)
-		api.GET("/password-changes", pch.GetPasswordChangeHistory)
-		api.GET("/password-changes/:id", pch.GetPasswordChangeStatus)
-		api.PUT("/password-changes/:id/verification", pch.CompletePasswordChange)
-		api.DELETE("/password-changes/:id", pch.CancelPasswordChange)
+		password.POST("/change", pch.InitiatePasswordChange)
+		password.GET("/change", pch.GetPasswordChangeHistory)
+		password.GET("/change/:id", pch.GetPasswordChangeStatus)
+		password.PUT("/change/:id/verification", pch.CompletePasswordChange)
+		password.DELETE("/change/:id", pch.CancelPasswordChange)
 	}
 
 	// Public password reset endpoints (no authentication required)
 	if pch != nil {
-		public := r.Group("/api/v1")
+		passwordPublic := r.Group("/password")
 		if validationMW != nil {
-			public.Use(validationMW.ValidateRequest())
+			passwordPublic.Use(validationMW.ValidateRequest())
 		}
 		
 		// Forgot password endpoints (public access)
-		public.POST("/password-reset", pch.InitiateForgotPassword)
-		public.PUT("/password-reset/:id/complete", pch.CompleteForgotPassword)
+		passwordPublic.POST("/reset", pch.InitiateForgotPassword)
+		passwordPublic.PUT("/reset/:id/complete", pch.CompleteForgotPassword)
 	}
 
 	// Admin endpoints with JWT, Casbin, and optionally validation

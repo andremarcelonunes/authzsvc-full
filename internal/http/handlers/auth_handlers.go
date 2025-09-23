@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -67,7 +68,11 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 		role = "user"
 	}
 	
-	user, err := h.authSvc.Register(c.Request.Context(), req.Email, req.Phone, req.Password, role)
+	// Get client IP for rate limiting
+	clientIP := c.ClientIP()
+	ctx := context.WithValue(c.Request.Context(), "client_ip", clientIP)
+	
+	user, err := h.authSvc.Register(ctx, req.Email, req.Phone, req.Password, role)
 	if err != nil {
 		if err == domain.ErrUserAlreadyExists {
 			c.JSON(http.StatusConflict, gin.H{"error": "User already exists"})

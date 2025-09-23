@@ -97,7 +97,7 @@ func (s *RateLimitValidationServiceImpl) CheckRateLimit(ctx context.Context, key
 		currentCount, _ = strconv.Atoi(currentCountStr)
 	}
 
-	// Check if limit exceeded
+	// Check if limit exceeded (allow if currentCount < limit, so 2 requests allowed with limit=2)
 	allowed := currentCount < limit
 	remaining := limit - currentCount
 	if remaining < 0 {

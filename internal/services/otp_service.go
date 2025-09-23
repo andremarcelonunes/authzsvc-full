@@ -3,8 +3,10 @@ package services
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"math/big"
+	"os"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -24,6 +26,15 @@ type OTPConfig struct {
 	TTL          time.Duration
 	MaxAttempts  int
 	ResendWindow time.Duration
+}
+
+// OTPLogEntry represents an OTP log entry for development/testing
+type OTPLogEntry struct {
+	Timestamp time.Time `json:"timestamp"`
+	UserID    uint      `json:"user_id"`
+	Phone     string    `json:"phone"`
+	Code      string    `json:"code"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // NewOTPService creates a new Redis-based OTP service
@@ -77,6 +88,9 @@ func (s *OTPServiceImpl) Generate(ctx context.Context, phone string, userID uint
 		Attempts:  0,
 	}
 
+	// Log OTP to file for development/testing purposes
+	s.logOTPToFile(userID, phone, code, otpReq.ExpiresAt)
+
 	// Send SMS notification
 	message := fmt.Sprintf("Your verification code is: %s. Valid for %d minutes.", code, int(s.config.TTL.Minutes()))
 	if err := s.notificationSvc.SendSMS(phone, message); err != nil {
@@ -129,7 +143,7 @@ func (s *OTPServiceImpl) Verify(ctx context.Context, phone, code string, userID 
 // CanResend implements domain.OTPService with Redis-based throttling
 func (s *OTPServiceImpl) CanResend(ctx context.Context, phone string) (bool, int64, error) {
 	resendKey := fmt.Sprintf("otp:res:%s", phone)
-	
+
 	ttl, err := s.redisClient.TTL(ctx, resendKey).Result()
 	if err != nil {
 		return false, 0, fmt.Errorf("failed to check resend TTL: %w", err)
@@ -147,7 +161,7 @@ func (s *OTPServiceImpl) CanResend(ctx context.Context, phone string) (bool, int
 // generateSecureCode generates a cryptographically secure OTP code
 func (s *OTPServiceImpl) generateSecureCode() (string, error) {
 	digits := make([]byte, s.config.Length)
-	
+
 	for i := 0; i < s.config.Length; i++ {
 		num, err := rand.Int(rand.Reader, big.NewInt(10))
 		if err != nil {
@@ -155,6 +169,40 @@ func (s *OTPServiceImpl) generateSecureCode() (string, error) {
 		}
 		digits[i] = byte('0' + num.Int64())
 	}
-	
+
 	return string(digits), nil
+}
+
+// logOTPToFile logs OTP information to a file for development/testing purposes
+func (s *OTPServiceImpl) logOTPToFile(userID uint, phone, code string, expiresAt time.Time) {
+	logEntry := OTPLogEntry{
+		Timestamp: time.Now(),
+		UserID:    userID,
+		Phone:     phone,
+		Code:      code,
+		ExpiresAt: expiresAt,
+	}
+
+	// Create logs directory if it doesn't exist
+	if err := os.MkdirAll("logs", 0755); err != nil {
+		// If we can't create logs directory, just return silently
+		return
+	}
+
+	// Open log file in append mode
+	file, err := os.OpenFile("logs/otp_codes.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		// If we can't open log file, just return silently
+		return
+	}
+	defer file.Close()
+
+	// Write log entry as JSON
+	jsonData, err := json.Marshal(logEntry)
+	if err != nil {
+		return
+	}
+
+	// Append newline and write to file
+	file.WriteString(string(jsonData) + "\n")
 }

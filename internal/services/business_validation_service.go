@@ -273,9 +273,11 @@ func (s *BusinessValidationServiceImpl) ValidateOTPRules(ctx context.Context, ph
 		return nil, fmt.Errorf("phone format validation failed: %w", err)
 	}
 
-	// Validate OTP code format
-	if err := s.validateOTPFormat(code, result); err != nil {
-		return nil, fmt.Errorf("OTP format validation failed: %w", err)
+	// Validate OTP code format (skip for OTP send requests where code is empty)
+	if code != "" {
+		if err := s.validateOTPFormat(code, result); err != nil {
+			return nil, fmt.Errorf("OTP format validation failed: %w", err)
+		}
 	}
 
 	// Validate user exists

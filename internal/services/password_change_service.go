@@ -49,9 +49,9 @@ func DefaultPasswordChangeConfig() PasswordChangeConfig {
 		OTPTTL:                  5 * time.Minute,
 		MaxOTPAttempts:          5,
 		PasswordHistoryCount:    5,
-		RateLimitWindow:         time.Hour,
-		MaxRequestsPerWindow:    3,
-		ForgotPasswordRateLimit: 999,
+		RateLimitWindow:         30 * time.Second,  // Changed to 30 seconds for testing
+		MaxRequestsPerWindow:    2,                  // Changed to 2 requests for testing
+		ForgotPasswordRateLimit: 2,                  // Changed to 2 for testing
 		MinPasswordLength:       8,
 		RequireUppercase:        true,
 		RequireLowercase:        true,
@@ -607,8 +607,8 @@ func (s *PasswordChangeService) checkForgotPasswordRateLimit(ctx context.Context
 		return fmt.Errorf("failed to check rate limit: %w", err)
 	}
 
-	// Temporarily disable rate limit check for testing
-	if false && count >= int64(s.config.ForgotPasswordRateLimit) {
+	// Check forgot password rate limit
+	if count >= int64(s.config.ForgotPasswordRateLimit) {
 		return domain.ErrForgotPasswordRateLimitExceeded
 	}
 

@@ -56,11 +56,18 @@ func NewAuthService(
 func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, role string) (*domain.User, error) {
 	// Validate registration request if validator is available
 	if s.requestValidator != nil {
+		// Get client IP from context if available
+		clientIP := "127.0.0.1" // default
+		if ip, ok := ctx.Value("client_ip").(string); ok && ip != "" {
+			clientIP = ip
+		}
+		
 		validationCtx := &domain.ValidationContext{
-			RequestID: fmt.Sprintf("reg_%d", time.Now().UnixNano()),
-			Endpoint:  "/auth/register",
-			Method:    "POST",
-			Timestamp: time.Now(),
+			RequestID:  fmt.Sprintf("reg_%d", time.Now().UnixNano()),
+			Endpoint:   "/auth/register",
+			Method:     "POST",
+			Timestamp:  time.Now(),
+			IPAddress:  clientIP,
 		}
 		
 		validationResult, err := s.requestValidator.ValidateRegistrationRequest(ctx, email, phone, password, role, validationCtx)
@@ -77,9 +84,15 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 		}
 	}
 
-	// Check if user already exists
+	// Check if user already exists by email
 	existingUser, err := s.userRepo.FindByEmail(ctx, email)
 	if err == nil && existingUser != nil {
+		return nil, domain.ErrUserAlreadyExists
+	}
+
+	// Check if user already exists by phone
+	existingUserByPhone, err := s.userRepo.FindByPhone(ctx, phone)
+	if err == nil && existingUserByPhone != nil {
 		return nil, domain.ErrUserAlreadyExists
 	}
 

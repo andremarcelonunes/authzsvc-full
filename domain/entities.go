@@ -5,8 +5,8 @@ import "time"
 // User represents a user in the system
 type User struct {
 	ID            uint
-	Email         string
-	Phone         string
+	Email         string `gorm:"uniqueIndex"`
+	Phone         string `gorm:"uniqueIndex"`
 	PasswordHash  string `gorm:"column:password"`
 	Role          string
 	IsActive      bool

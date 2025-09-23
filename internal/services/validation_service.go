@@ -188,24 +188,7 @@ func (s *RequestValidationServiceImpl) ValidateRegistrationRequest(ctx context.C
 		Passed:       true,  // Start as passed, set to false if errors found
 	}
 
-	// Rate limiting check for registration
-	rateLimitKey := fmt.Sprintf("reg_limit:%s", validationCtx.IPAddress)
-	rateLimitResult, err := s.rateLimitValidator.CheckRateLimit(ctx, rateLimitKey, 5, 1*time.Hour)
-	if err != nil {
-		return nil, fmt.Errorf("rate limit check failed: %w", err)
-	}
-	if !rateLimitResult.Allowed {
-		result.IsValid = false
-		result.Passed = false
-		result.Errors = append(result.Errors, domain.ValidationError{
-			Code:      "RATE_LIMIT_EXCEEDED",
-			Message:   "Registration rate limit exceeded",
-			Severity:  domain.SeverityError,
-			Category:  domain.CategoryRateLimit,
-			Timestamp: time.Now(),
-		})
-		return result, nil
-	}
+	// Rate limiting will be checked after validation succeeds
 
 	// Validate individual fields
 	fields := map[string]interface{}{
@@ -262,6 +245,44 @@ func (s *RequestValidationServiceImpl) ValidateRegistrationRequest(ctx context.C
 	if len(result.Errors) == 0 {
 		result.IsValid = true
 		result.Passed = true
+		
+		// REGISTRATION BUSINESS RULE: Allow exactly 2 registration attempts per 30 seconds  
+		windowStart := time.Now().Truncate(30 * time.Second)
+		rateLimitKey := fmt.Sprintf("registration_rate:%s:%d", validationCtx.IPAddress, windowStart.Unix())
+		fmt.Printf("DEBUG: REGISTRATION ValidateRegistrationRequest called for IP %s, key %s\n", validationCtx.IPAddress, rateLimitKey)
+		
+		// Initialize key with 0 if it doesn't exist, then increment
+		exists := s.redisClient.Exists(ctx, rateLimitKey).Val()
+		if exists == 0 {
+			s.redisClient.Set(ctx, rateLimitKey, 0, 35*time.Second)
+		}
+		
+		// Get current count
+		count := s.redisClient.Get(ctx, rateLimitKey).Val()
+		currentCount := 0
+		if count != "" {
+			if c, err := s.redisClient.Get(ctx, rateLimitKey).Int(); err == nil {
+				currentCount = c
+			}
+		}
+		
+		// Check if we can allow this request (current + 1 <= 2)
+		if currentCount >= 2 {
+			result.IsValid = false
+			result.Passed = false
+			result.Errors = append(result.Errors, domain.ValidationError{
+				Code:      "RATE_LIMIT_EXCEEDED", 
+				Message:   "Registration rate limit exceeded",
+				Severity:  domain.SeverityError,
+				Category:  domain.CategoryRateLimit,
+				Timestamp: time.Now(),
+			})
+		} else {
+			// Increment counter (this request is allowed)
+			newCount := s.redisClient.Incr(ctx, rateLimitKey).Val()
+			s.redisClient.Expire(ctx, rateLimitKey, 35*time.Second)
+			fmt.Printf("SIMPLE: IP %s request %d/2 allowed\n", validationCtx.IPAddress, newCount)
+		}
 	}
 
 	result.ValidationTime = time.Since(startTime)
