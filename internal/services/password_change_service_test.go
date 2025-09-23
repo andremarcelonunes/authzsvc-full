@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -729,5 +730,715 @@ func TestPasswordChangeConfig_DefaultValues(t *testing.T) {
 		if config.ForbiddenPasswords[i] != expected {
 			t.Errorf("expected forbidden password %s at index %d, got %s", expected, i, config.ForbiddenPasswords[i])
 		}
+	}
+}
+
+// ===== COMPREHENSIVE TESTS FOR MAIN BUSINESS LOGIC =====
+
+func TestPasswordChangeService_InitiatePasswordChange(t *testing.T) {
+	tests := []struct {
+		name               string
+		userID             uint
+		currentPassword    string
+		newPassword        string
+		confirmPassword    string
+		ipAddress          string
+		userAgent          string
+		setupMocks         func(*mocks.MockUserRepository, *mocks.MockPasswordService, *mocks.MockPasswordHistoryRepository, *mocks.MockPasswordChangeRepository, *mocks.MockOTPService)
+		expectedError      error
+		expectedStatus     string
+		validateResponse   func(*testing.T, *domain.PasswordChangeResponse)
+	}{
+		{
+			name:            "successful password change initiation",
+			userID:          1,
+			currentPassword: "CurrentPass123!",
+			newPassword:     "NewSecurePass123!",
+			confirmPassword: "NewSecurePass123!",
+			ipAddress:       "192.168.1.1",
+			userAgent:       "Mozilla/5.0",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, passwordChangeRepo *mocks.MockPasswordChangeRepository, otpService *mocks.MockOTPService) {
+				user := createValidUserForTest(t)
+				userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
+					return user, nil
+				}
+				passwordService.VerifyFunc = func(hash, password string) bool {
+					return hash == "hashedpassword123" && password == "CurrentPass123!" // Current password correct, new password different
+				}
+				passwordService.HashFunc = func(password string) (string, error) {
+					return "new_hashed_password", nil
+				}
+				passwordHistoryRepo.GetRecentPasswordsFunc = func(ctx context.Context, userID uint, count int) ([]string, error) {
+					return []string{}, nil // No password history
+				}
+				passwordChangeRepo.CountRecentByUserIDFunc = func(ctx context.Context, userID uint, since time.Time) (int64, error) {
+					return 0, nil // No recent requests
+				}
+				passwordChangeRepo.GetActiveByUserIDFunc = func(ctx context.Context, userID uint) (*domain.PasswordChangeRequest, error) {
+					return nil, nil // No active requests
+				}
+				passwordChangeRepo.CreateFunc = func(ctx context.Context, request *domain.PasswordChangeRequest) error {
+					return nil // Success
+				}
+				otpService.GenerateFunc = func(ctx context.Context, phone string, userID uint) (*domain.OTPRequest, error) {
+					return &domain.OTPRequest{Code: "123456"}, nil
+				}
+			},
+			expectedError:  nil,
+			expectedStatus: "initiated",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				if response.RequestID == "" {
+					t.Error("expected non-empty request ID")
+				}
+				if response.Nonce == "" {
+					t.Error("expected non-empty nonce")
+				}
+				if response.ExpiresAt.IsZero() {
+					t.Error("expected non-zero expiration time")
+				}
+			},
+		},
+		{
+			name:            "passwords do not match",
+			userID:          1,
+			currentPassword: "CurrentPass123!",
+			newPassword:     "NewSecurePass123!",
+			confirmPassword: "DifferentPass123!",
+			ipAddress:       "192.168.1.1",
+			userAgent:       "Mozilla/5.0",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, passwordChangeRepo *mocks.MockPasswordChangeRepository, otpService *mocks.MockOTPService) {
+				// No mocks needed - validation fails early
+			},
+			expectedError:  fmt.Errorf("new password and confirmation do not match"),
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:            "user not found",
+			userID:          999,
+			currentPassword: "CurrentPass123!",
+			newPassword:     "NewSecurePass123!",
+			confirmPassword: "NewSecurePass123!",
+			ipAddress:       "192.168.1.1",
+			userAgent:       "Mozilla/5.0",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, passwordChangeRepo *mocks.MockPasswordChangeRepository, otpService *mocks.MockOTPService) {
+				userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
+					return nil, fmt.Errorf("user not found")
+				}
+			},
+			expectedError:  fmt.Errorf("failed to find user: user not found"),
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:            "current password incorrect",
+			userID:          1,
+			currentPassword: "WrongCurrentPass!",
+			newPassword:     "NewSecurePass123!",
+			confirmPassword: "NewSecurePass123!",
+			ipAddress:       "192.168.1.1",
+			userAgent:       "Mozilla/5.0",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, passwordChangeRepo *mocks.MockPasswordChangeRepository, otpService *mocks.MockOTPService) {
+				user := createValidUserForTest(t)
+				userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
+					return user, nil
+				}
+				passwordService.VerifyFunc = func(hash, password string) bool {
+					return false // Current password verification fails
+				}
+			},
+			expectedError:  domain.ErrCurrentPasswordIncorrect,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:            "new password same as current",
+			userID:          1,
+			currentPassword: "CurrentPass123!",
+			newPassword:     "CurrentPass123!",
+			confirmPassword: "CurrentPass123!",
+			ipAddress:       "192.168.1.1",
+			userAgent:       "Mozilla/5.0",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, passwordChangeRepo *mocks.MockPasswordChangeRepository, otpService *mocks.MockOTPService) {
+				user := createValidUserForTest(t)
+				userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
+					return user, nil
+				}
+				passwordService.VerifyFunc = func(hash, password string) bool {
+					return true // Both current and new password verification returns true
+				}
+			},
+			expectedError:  domain.ErrPasswordSameAsCurrent,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:            "password strength insufficient",
+			userID:          1,
+			currentPassword: "CurrentPass123!",
+			newPassword:     "weak",
+			confirmPassword: "weak",
+			ipAddress:       "192.168.1.1",
+			userAgent:       "Mozilla/5.0",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, passwordChangeRepo *mocks.MockPasswordChangeRepository, otpService *mocks.MockOTPService) {
+				user := createValidUserForTest(t)
+				userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
+					return user, nil
+				}
+				passwordService.VerifyFunc = func(hash, password string) bool {
+					return hash == "hashedpassword123" && password == "CurrentPass123!"
+				}
+			},
+			expectedError:  domain.ErrPasswordStrengthInsufficient,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:            "password reused from history",
+			userID:          1,
+			currentPassword: "CurrentPass123!",
+			newPassword:     "PreviousPass123!",
+			confirmPassword: "PreviousPass123!",
+			ipAddress:       "192.168.1.1",
+			userAgent:       "Mozilla/5.0",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, passwordChangeRepo *mocks.MockPasswordChangeRepository, otpService *mocks.MockOTPService) {
+				user := createValidUserForTest(t)
+				userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
+					return user, nil
+				}
+				passwordService.VerifyFunc = func(hash, password string) bool {
+					if hash == "hashedpassword123" && password == "CurrentPass123!" {
+						return true // Current password correct
+					}
+					if hash == "previous_hash" && password == "PreviousPass123!" {
+						return true // Password found in history
+					}
+					return false
+				}
+				passwordHistoryRepo.GetRecentPasswordsFunc = func(ctx context.Context, userID uint, count int) ([]string, error) {
+					return []string{"previous_hash"}, nil
+				}
+			},
+			expectedError:  domain.ErrPasswordReused,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:            "rate limit exceeded",
+			userID:          1,
+			currentPassword: "CurrentPass123!",
+			newPassword:     "NewSecurePass123!",
+			confirmPassword: "NewSecurePass123!",
+			ipAddress:       "192.168.1.1",
+			userAgent:       "Mozilla/5.0",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, passwordChangeRepo *mocks.MockPasswordChangeRepository, otpService *mocks.MockOTPService) {
+				user := createValidUserForTest(t)
+				userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
+					return user, nil
+				}
+				passwordService.VerifyFunc = func(hash, password string) bool {
+					return hash == "hashedpassword123" && password == "CurrentPass123!"
+				}
+				passwordHistoryRepo.GetRecentPasswordsFunc = func(ctx context.Context, userID uint, count int) ([]string, error) {
+					return []string{}, nil
+				}
+				passwordChangeRepo.CountRecentByUserIDFunc = func(ctx context.Context, userID uint, since time.Time) (int64, error) {
+					return 3, nil // At rate limit
+				}
+			},
+			expectedError:  domain.ErrPasswordChangeRateLimitExceeded,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:            "existing active request",
+			userID:          1,
+			currentPassword: "CurrentPass123!",
+			newPassword:     "NewSecurePass123!",
+			confirmPassword: "NewSecurePass123!",
+			ipAddress:       "192.168.1.1",
+			userAgent:       "Mozilla/5.0",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, passwordChangeRepo *mocks.MockPasswordChangeRepository, otpService *mocks.MockOTPService) {
+				user := createValidUserForTest(t)
+				userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
+					return user, nil
+				}
+				passwordService.VerifyFunc = func(hash, password string) bool {
+					return hash == "hashedpassword123" && password == "CurrentPass123!"
+				}
+				passwordHistoryRepo.GetRecentPasswordsFunc = func(ctx context.Context, userID uint, count int) ([]string, error) {
+					return []string{}, nil
+				}
+				passwordChangeRepo.CountRecentByUserIDFunc = func(ctx context.Context, userID uint, since time.Time) (int64, error) {
+					return 0, nil
+				}
+				passwordChangeRepo.GetActiveByUserIDFunc = func(ctx context.Context, userID uint) (*domain.PasswordChangeRequest, error) {
+					return &domain.PasswordChangeRequest{ID: "existing-request"}, nil
+				}
+			},
+			expectedError:  domain.ErrPasswordChangeInProgress,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:            "OTP generation failure",
+			userID:          1,
+			currentPassword: "CurrentPass123!",
+			newPassword:     "NewSecurePass123!",
+			confirmPassword: "NewSecurePass123!",
+			ipAddress:       "192.168.1.1",
+			userAgent:       "Mozilla/5.0",
+			setupMocks: func(userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, passwordChangeRepo *mocks.MockPasswordChangeRepository, otpService *mocks.MockOTPService) {
+				user := createValidUserForTest(t)
+				userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
+					return user, nil
+				}
+				passwordService.VerifyFunc = func(hash, password string) bool {
+					return hash == "hashedpassword123" && password == "CurrentPass123!"
+				}
+				passwordService.HashFunc = func(password string) (string, error) {
+					return "new_hashed_password", nil
+				}
+				passwordHistoryRepo.GetRecentPasswordsFunc = func(ctx context.Context, userID uint, count int) ([]string, error) {
+					return []string{}, nil
+				}
+				passwordChangeRepo.CountRecentByUserIDFunc = func(ctx context.Context, userID uint, since time.Time) (int64, error) {
+					return 0, nil
+				}
+				passwordChangeRepo.GetActiveByUserIDFunc = func(ctx context.Context, userID uint) (*domain.PasswordChangeRequest, error) {
+					return nil, nil
+				}
+				otpService.GenerateFunc = func(ctx context.Context, phone string, userID uint) (*domain.OTPRequest, error) {
+					return nil, fmt.Errorf("SMS service unavailable")
+				}
+			},
+			expectedError:  fmt.Errorf("failed to send OTP: SMS service unavailable"),
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup mocks
+			userRepo := mocks.NewMockUserRepository()
+			passwordService := mocks.NewMockPasswordService()
+			passwordHistoryRepo := mocks.NewMockPasswordHistoryRepository()
+			passwordChangeRepo := mocks.NewMockPasswordChangeRepository()
+			forgotPasswordRepo := mocks.NewMockForgotPasswordRepository()
+			otpService := mocks.NewMockOTPService()
+			sessionRepo := mocks.NewMockSessionRepository()
+
+			tt.setupMocks(userRepo, passwordService, passwordHistoryRepo, passwordChangeRepo, otpService)
+
+			// Create service
+			config := createDefaultTestConfig(t)
+			auditService := mocks.NewMockComprehensiveAuditService()
+			service := NewPasswordChangeService(
+				passwordChangeRepo,
+				passwordHistoryRepo,
+				forgotPasswordRepo,
+				userRepo,
+				passwordService,
+				otpService,
+				sessionRepo,
+				auditService,
+				config,
+			)
+
+			// Execute test
+			response, err := service.InitiatePasswordChange(
+				context.Background(),
+				tt.userID,
+				tt.currentPassword,
+				tt.newPassword,
+				tt.confirmPassword,
+				tt.ipAddress,
+				tt.userAgent,
+			)
+
+			// Verify error
+			if tt.expectedError != nil {
+				if err == nil {
+					t.Errorf("expected error %v, got nil", tt.expectedError)
+				} else if err.Error() != tt.expectedError.Error() {
+					t.Errorf("expected error %v, got %v", tt.expectedError, err)
+				}
+				if response != nil {
+					t.Error("expected nil response on error")
+				}
+				return
+			}
+
+			// Verify success
+			if err != nil {
+				t.Errorf("expected no error, got %v", err)
+				return
+			}
+
+			if response == nil {
+				t.Error("expected non-nil response")
+				return
+			}
+
+			if response.Status != tt.expectedStatus {
+				t.Errorf("expected status %s, got %s", tt.expectedStatus, response.Status)
+			}
+
+			// Run additional validations
+			if tt.validateResponse != nil {
+				tt.validateResponse(t, response)
+			}
+		})
+	}
+}
+
+func TestPasswordChangeService_CompletePasswordChange(t *testing.T) {
+	tests := []struct {
+		name               string
+		userID             uint
+		requestID          string
+		otpCode            string
+		nonce              string
+		setupMocks         func(*mocks.MockPasswordChangeRepository, *mocks.MockUserRepository, *mocks.MockPasswordService, *mocks.MockPasswordHistoryRepository, *mocks.MockSessionRepository)
+		expectedError      error
+		expectedStatus     string
+		validateResponse   func(*testing.T, *domain.PasswordChangeResponse)
+	}{
+		{
+			name:      "successful password change completion",
+			userID:    1,
+			requestID: "test-request-123",
+			otpCode:   "123456",
+			nonce:     "test-nonce-456",
+			setupMocks: func(passwordChangeRepo *mocks.MockPasswordChangeRepository, userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, sessionRepo *mocks.MockSessionRepository) {
+				// Mock password change request
+				request := &domain.PasswordChangeRequest{
+					ID:                "test-request-123",
+					UserID:            1,
+					Status:            string(domain.PasswordChangeStatusInitiated),
+					RequestedAt:       time.Now().Add(-5 * time.Minute),
+					ExpiresAt:         time.Now().Add(10 * time.Minute),
+					Nonce:             "test-nonce-456",
+					OTPCode:           "123456",
+					OTPAttempts:       0,
+					OTPGeneratedAt:    &time.Time{},
+					OTPExpiresAt:      &time.Time{},
+					IPAddress:         "192.168.1.1",
+					UserAgent:         "Mozilla/5.0",
+				}
+				*request.OTPGeneratedAt = time.Now().Add(-2 * time.Minute)
+				expiresAt := time.Now().Add(3 * time.Minute)
+				request.OTPExpiresAt = &expiresAt
+
+				passwordChangeRepo.GetByIDFunc = func(ctx context.Context, id string) (*domain.PasswordChangeRequest, error) {
+					return request, nil
+				}
+				passwordChangeRepo.UpdateOTPAttemptsFunc = func(ctx context.Context, requestID string, attempts int) error {
+					return nil
+				}
+				passwordChangeRepo.UpdateStatusFunc = func(ctx context.Context, requestID string, status string, message string) error {
+					return nil
+				}
+
+				// Mock user
+				user := createValidUserForTest(t)
+				userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) {
+					return user, nil
+				}
+				userRepo.UpdateFunc = func(ctx context.Context, user *domain.User) error {
+					return nil
+				}
+
+				// Mock password history
+				passwordHistoryRepo.AddFunc = func(ctx context.Context, userID uint, passwordHash string, changeType string) error {
+					return nil
+				}
+				passwordHistoryRepo.CleanupOldHistoryFunc = func(ctx context.Context, userID uint, keepCount int) error {
+					return nil
+				}
+
+				// Mock session invalidation
+				sessionRepo.DeleteAllForUserFunc = func(ctx context.Context, userID uint) error {
+					return nil
+				}
+			},
+			expectedError:  nil,
+			expectedStatus: "completed",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				if response.RequestID != "test-request-123" {
+					t.Errorf("expected request ID test-request-123, got %s", response.RequestID)
+				}
+				if !strings.Contains(response.Message, "successfully") {
+					t.Errorf("expected success message, got %s", response.Message)
+				}
+			},
+		},
+		{
+			name:      "request not found",
+			userID:    1,
+			requestID: "nonexistent-request",
+			otpCode:   "123456",
+			nonce:     "test-nonce",
+			setupMocks: func(passwordChangeRepo *mocks.MockPasswordChangeRepository, userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, sessionRepo *mocks.MockSessionRepository) {
+				passwordChangeRepo.GetByIDFunc = func(ctx context.Context, id string) (*domain.PasswordChangeRequest, error) {
+					return nil, fmt.Errorf("request not found")
+				}
+			},
+			expectedError:  fmt.Errorf("request not found"),
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:      "unauthorized user",
+			userID:    999, // Different user
+			requestID: "test-request-123",
+			otpCode:   "123456",
+			nonce:     "test-nonce-456",
+			setupMocks: func(passwordChangeRepo *mocks.MockPasswordChangeRepository, userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, sessionRepo *mocks.MockSessionRepository) {
+				request := &domain.PasswordChangeRequest{
+					ID:     "test-request-123",
+					UserID: 1, // Different from test userID (999)
+					Status: string(domain.PasswordChangeStatusInitiated),
+				}
+				passwordChangeRepo.GetByIDFunc = func(ctx context.Context, id string) (*domain.PasswordChangeRequest, error) {
+					return request, nil
+				}
+			},
+			expectedError:  domain.ErrPasswordChangeUnauthorized,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:      "invalid request status",
+			userID:    1,
+			requestID: "test-request-123",
+			otpCode:   "123456",
+			nonce:     "test-nonce-456",
+			setupMocks: func(passwordChangeRepo *mocks.MockPasswordChangeRepository, userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, sessionRepo *mocks.MockSessionRepository) {
+				request := &domain.PasswordChangeRequest{
+					ID:     "test-request-123",
+					UserID: 1,
+					Status: string(domain.PasswordChangeStatusCompleted), // Wrong status
+				}
+				passwordChangeRepo.GetByIDFunc = func(ctx context.Context, id string) (*domain.PasswordChangeRequest, error) {
+					return request, nil
+				}
+			},
+			expectedError:  fmt.Errorf("password change request is not in initiated status"),
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:      "expired request",
+			userID:    1,
+			requestID: "test-request-123",
+			otpCode:   "123456",
+			nonce:     "test-nonce-456",
+			setupMocks: func(passwordChangeRepo *mocks.MockPasswordChangeRepository, userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, sessionRepo *mocks.MockSessionRepository) {
+				request := &domain.PasswordChangeRequest{
+					ID:          "test-request-123",
+					UserID:      1,
+					Status:      string(domain.PasswordChangeStatusInitiated),
+					ExpiresAt:   time.Now().Add(-1 * time.Minute), // Expired
+					Nonce:       "test-nonce-456",
+					OTPCode:     "123456",
+					OTPAttempts: 0,
+				}
+				passwordChangeRepo.GetByIDFunc = func(ctx context.Context, id string) (*domain.PasswordChangeRequest, error) {
+					return request, nil
+				}
+				passwordChangeRepo.UpdateStatusFunc = func(ctx context.Context, requestID string, status string, message string) error {
+					return nil
+				}
+			},
+			expectedError:  domain.ErrPasswordChangeExpired,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:      "invalid nonce",
+			userID:    1,
+			requestID: "test-request-123",
+			otpCode:   "123456",
+			nonce:     "wrong-nonce",
+			setupMocks: func(passwordChangeRepo *mocks.MockPasswordChangeRepository, userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, sessionRepo *mocks.MockSessionRepository) {
+				request := &domain.PasswordChangeRequest{
+					ID:        "test-request-123",
+					UserID:    1,
+					Status:    string(domain.PasswordChangeStatusInitiated),
+					ExpiresAt: time.Now().Add(10 * time.Minute),
+					Nonce:     "correct-nonce",
+					OTPCode:   "123456",
+				}
+				passwordChangeRepo.GetByIDFunc = func(ctx context.Context, id string) (*domain.PasswordChangeRequest, error) {
+					return request, nil
+				}
+			},
+			expectedError:  domain.ErrPasswordChangeInvalidNonce,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:      "invalid OTP code",
+			userID:    1,
+			requestID: "test-request-123",
+			otpCode:   "wrong-otp",
+			nonce:     "test-nonce-456",
+			setupMocks: func(passwordChangeRepo *mocks.MockPasswordChangeRepository, userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, sessionRepo *mocks.MockSessionRepository) {
+				request := &domain.PasswordChangeRequest{
+					ID:          "test-request-123",
+					UserID:      1,
+					Status:      string(domain.PasswordChangeStatusInitiated),
+					ExpiresAt:   time.Now().Add(10 * time.Minute),
+					Nonce:       "test-nonce-456",
+					OTPCode:     "123456",
+					OTPAttempts: 0,
+				}
+				passwordChangeRepo.GetByIDFunc = func(ctx context.Context, id string) (*domain.PasswordChangeRequest, error) {
+					return request, nil
+				}
+				passwordChangeRepo.UpdateOTPAttemptsFunc = func(ctx context.Context, requestID string, attempts int) error {
+					return nil
+				}
+			},
+			expectedError:  domain.ErrPasswordChangeInvalidOTP,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+		{
+			name:      "max OTP attempts exceeded",
+			userID:    1,
+			requestID: "test-request-123",
+			otpCode:   "123456",
+			nonce:     "test-nonce-456",
+			setupMocks: func(passwordChangeRepo *mocks.MockPasswordChangeRepository, userRepo *mocks.MockUserRepository, passwordService *mocks.MockPasswordService, passwordHistoryRepo *mocks.MockPasswordHistoryRepository, sessionRepo *mocks.MockSessionRepository) {
+				request := &domain.PasswordChangeRequest{
+					ID:          "test-request-123",
+					UserID:      1,
+					Status:      string(domain.PasswordChangeStatusInitiated),
+					ExpiresAt:   time.Now().Add(10 * time.Minute),
+					Nonce:       "test-nonce-456",
+					OTPCode:     "123456",
+					OTPAttempts: 5, // Max attempts reached
+				}
+				passwordChangeRepo.GetByIDFunc = func(ctx context.Context, id string) (*domain.PasswordChangeRequest, error) {
+					return request, nil
+				}
+				passwordChangeRepo.UpdateStatusFunc = func(ctx context.Context, requestID string, status string, message string) error {
+					return nil
+				}
+			},
+			expectedError:  domain.ErrPasswordChangeOTPMaxAttempts,
+			expectedStatus: "",
+			validateResponse: func(t *testing.T, response *domain.PasswordChangeResponse) {
+				// Response should be nil on error
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup mocks
+			passwordChangeRepo := mocks.NewMockPasswordChangeRepository()
+			userRepo := mocks.NewMockUserRepository()
+			passwordService := mocks.NewMockPasswordService()
+			passwordHistoryRepo := mocks.NewMockPasswordHistoryRepository()
+			forgotPasswordRepo := mocks.NewMockForgotPasswordRepository()
+			otpService := mocks.NewMockOTPService()
+			sessionRepo := mocks.NewMockSessionRepository()
+
+			tt.setupMocks(passwordChangeRepo, userRepo, passwordService, passwordHistoryRepo, sessionRepo)
+
+			// Create service
+			config := createDefaultTestConfig(t)
+			auditService := mocks.NewMockComprehensiveAuditService()
+			service := NewPasswordChangeService(
+				passwordChangeRepo,
+				passwordHistoryRepo,
+				forgotPasswordRepo,
+				userRepo,
+				passwordService,
+				otpService,
+				sessionRepo,
+				auditService,
+				config,
+			)
+
+			// Store temporary password hash for completion (simulate initiation)
+			service.storeTemporaryPasswordHash(tt.requestID, "new_hashed_password")
+
+			// Execute test
+			response, err := service.CompletePasswordChange(
+				context.Background(),
+				tt.userID,
+				tt.requestID,
+				tt.otpCode,
+				tt.nonce,
+			)
+
+			// Verify error
+			if tt.expectedError != nil {
+				if err == nil {
+					t.Errorf("expected error %v, got nil", tt.expectedError)
+				} else if err.Error() != tt.expectedError.Error() {
+					t.Errorf("expected error %v, got %v", tt.expectedError, err)
+				}
+				if response != nil {
+					t.Error("expected nil response on error")
+				}
+				return
+			}
+
+			// Verify success
+			if err != nil {
+				t.Errorf("expected no error, got %v", err)
+				return
+			}
+
+			if response == nil {
+				t.Error("expected non-nil response")
+				return
+			}
+
+			if response.Status != tt.expectedStatus {
+				t.Errorf("expected status %s, got %s", tt.expectedStatus, response.Status)
+			}
+
+			// Run additional validations
+			if tt.validateResponse != nil {
+				tt.validateResponse(t, response)
+			}
+		})
 	}
 }

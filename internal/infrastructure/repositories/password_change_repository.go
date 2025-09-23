@@ -331,3 +331,10 @@ func (r *PasswordChangeRepository) toDomainModel(dbRequest *DBPasswordChangeRequ
 		UserAgent:   dbRequest.UserAgent,
 	}
 }
+
+// DeleteExpired deletes expired forgot password requests (delegates to password change repository logic)
+func (r *ForgotPasswordRepository) DeleteExpired(ctx context.Context) error {
+	return r.db.WithContext(ctx).
+		Where("expires_at < ?", time.Now()).
+		Delete(&DBPasswordChangeRequest{}).Error
+}

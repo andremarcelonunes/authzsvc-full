@@ -75,6 +75,11 @@ const (
 	EventTypeLoginFailure     = "login_failure"
 	EventTypeLogout           = "logout"
 	EventTypePasswordReset    = "password_reset"
+	EventTypePasswordChangeInitiated = "password_change_initiated"
+	EventTypePasswordChangeCompleted = "password_change_completed"
+	EventTypePasswordChangeFailed    = "password_change_failed"
+	EventTypePasswordChangeCancelled = "password_change_cancelled"
+	EventTypePasswordChangeExpired   = "password_change_expired"
 	EventTypeAccountLocked    = "account_locked"
 	
 	// Authorization events

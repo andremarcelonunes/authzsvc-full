@@ -10,18 +10,18 @@ import (
 	"time"
 
 	"github.com/you/authzsvc/domain"
-	"github.com/you/authzsvc/internal/infrastructure/repositories"
 )
 
 // PasswordChangeService handles password change and forgot password operations
 type PasswordChangeService struct {
-	passwordChangeRepo  *repositories.PasswordChangeRepository
-	passwordHistoryRepo *repositories.PasswordHistoryRepository
-	forgotPasswordRepo  *repositories.ForgotPasswordRepository
+	passwordChangeRepo  domain.PasswordChangeRepository
+	passwordHistoryRepo domain.PasswordHistoryRepository
+	forgotPasswordRepo  domain.ForgotPasswordRepository
 	userRepo            domain.UserRepository
 	passwordService     domain.PasswordService
 	otpService          domain.OTPService
 	sessionRepo         domain.SessionRepository
+	auditService        domain.ComprehensiveAuditService
 	config              PasswordChangeConfig
 }
 
@@ -63,13 +63,14 @@ func DefaultPasswordChangeConfig() PasswordChangeConfig {
 
 // NewPasswordChangeService creates a new password change service
 func NewPasswordChangeService(
-	passwordChangeRepo *repositories.PasswordChangeRepository,
-	passwordHistoryRepo *repositories.PasswordHistoryRepository,
-	forgotPasswordRepo *repositories.ForgotPasswordRepository,
+	passwordChangeRepo domain.PasswordChangeRepository,
+	passwordHistoryRepo domain.PasswordHistoryRepository,
+	forgotPasswordRepo domain.ForgotPasswordRepository,
 	userRepo domain.UserRepository,
 	passwordService domain.PasswordService,
 	otpService domain.OTPService,
 	sessionRepo domain.SessionRepository,
+	auditService domain.ComprehensiveAuditService,
 	config PasswordChangeConfig,
 ) *PasswordChangeService {
 	return &PasswordChangeService{
@@ -80,6 +81,7 @@ func NewPasswordChangeService(
 		passwordService:     passwordService,
 		otpService:          otpService,
 		sessionRepo:         sessionRepo,
+		auditService:        auditService,
 		config:              config,
 	}
 }
@@ -170,12 +172,23 @@ func (s *PasswordChangeService) InitiatePasswordChange(ctx context.Context, user
 
 	// Save request
 	if err := s.passwordChangeRepo.Create(ctx, request); err != nil {
+		// Audit the failure
+		if s.auditService != nil {
+			s.auditService.LogPasswordChangeFailed(ctx, &userID, requestID, fmt.Sprintf("Failed to create request: %v", err), ipAddress, userAgent)
+		}
 		return nil, fmt.Errorf("failed to create password change request: %w", err)
 	}
 
 	// Store the new password hash in a separate field for later verification
 	// We'll use a Redis key for this temporarily
 	s.storeTemporaryPasswordHash(requestID, newPasswordHash)
+
+	// Audit successful initiation
+	if s.auditService != nil {
+		if err := s.auditService.LogPasswordChangeInitiated(ctx, userID, requestID, ipAddress, userAgent); err != nil {
+			log.Printf("Failed to log password change initiation audit event: %v", err)
+		}
+	}
 
 	return &domain.PasswordChangeResponse{
 		RequestID: requestID,
@@ -207,6 +220,10 @@ func (s *PasswordChangeService) CompletePasswordChange(ctx context.Context, user
 	// Check if expired
 	if request.IsExpired() {
 		s.passwordChangeRepo.UpdateStatus(ctx, requestID, string(domain.PasswordChangeStatusExpired), "Request expired")
+		// Audit the expiration
+		if s.auditService != nil {
+			s.auditService.LogPasswordChangeExpired(ctx, userID, requestID, request.IPAddress, request.UserAgent)
+		}
 		return nil, domain.ErrPasswordChangeExpired
 	}
 
@@ -228,6 +245,10 @@ func (s *PasswordChangeService) CompletePasswordChange(ctx context.Context, user
 		// Increment OTP attempts
 		request.OTPAttempts++
 		s.passwordChangeRepo.UpdateOTPAttempts(ctx, requestID, request.OTPAttempts)
+		// Audit the invalid OTP attempt
+		if s.auditService != nil {
+			s.auditService.LogPasswordChangeFailed(ctx, &userID, requestID, "Invalid OTP code", request.IPAddress, request.UserAgent)
+		}
 		return nil, domain.ErrPasswordChangeInvalidOTP
 	}
 
@@ -272,6 +293,13 @@ func (s *PasswordChangeService) CompletePasswordChange(ctx context.Context, user
 
 	// Clean up old password history
 	s.passwordHistoryRepo.CleanupOldHistory(ctx, userID, s.config.PasswordHistoryCount)
+
+	// Audit successful password change completion
+	if s.auditService != nil {
+		if err := s.auditService.LogPasswordChangeCompleted(ctx, userID, requestID, request.IPAddress, request.UserAgent); err != nil {
+			log.Printf("Failed to log password change completion audit event: %v", err)
+		}
+	}
 
 	return &domain.PasswordChangeResponse{
 		RequestID: requestID,

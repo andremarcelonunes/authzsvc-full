@@ -80,6 +80,7 @@ func Run(cfg *config.Config) error {
 		passwordSvc,
 		otpSvc,
 		sessionRepo,
+		auditSvc,
 		passwordChangeConfig,
 	)
 

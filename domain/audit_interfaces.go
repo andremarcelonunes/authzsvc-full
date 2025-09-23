@@ -52,6 +52,13 @@ type ComprehensiveAuditLogger interface {
 	LogLogout(ctx context.Context, userID uint, sessionID, ipAddress string) error
 	LogPasswordReset(ctx context.Context, userID uint, ipAddress string) error
 	
+	// Password change event logging (CB-183 specific)
+	LogPasswordChangeInitiated(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error
+	LogPasswordChangeCompleted(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error
+	LogPasswordChangeFailed(ctx context.Context, userID *uint, requestID, reason, ipAddress, userAgent string) error
+	LogPasswordChangeCancelled(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error
+	LogPasswordChangeExpired(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error
+	
 	// Authorization event logging  
 	LogAuthorizationEvent(ctx context.Context, event *AuthzEvent) error
 	LogPermissionCheck(ctx context.Context, userID uint, resource, action string, decision AuthzDecision) error

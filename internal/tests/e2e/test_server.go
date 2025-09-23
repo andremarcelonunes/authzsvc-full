@@ -197,6 +197,7 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 		passwordSvc,
 		otpSvc,
 		sessionRepo,
+		auditSvc,
 		passwordChangeConfig,
 	)
 	passwordChangeH := handlers.NewPasswordChangeHandlers(passwordChangeSvc)

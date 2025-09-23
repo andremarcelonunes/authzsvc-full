@@ -17,6 +17,14 @@ type MockComprehensiveAuditService struct {
 	LogLoginAttemptFunc        func(ctx context.Context, userID uint, email, ipAddress string, success bool, reason string) error
 	LogLogoutFunc              func(ctx context.Context, userID uint, sessionID, ipAddress string) error
 	LogPasswordResetFunc       func(ctx context.Context, userID uint, ipAddress string) error
+	
+	// Password change event logging functions (CB-183)
+	LogPasswordChangeInitiatedFunc func(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error
+	LogPasswordChangeCompletedFunc func(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error
+	LogPasswordChangeFailedFunc    func(ctx context.Context, userID *uint, requestID, reason, ipAddress, userAgent string) error
+	LogPasswordChangeCancelledFunc func(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error
+	LogPasswordChangeExpiredFunc   func(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error
+	
 	LogSystemEventFunc         func(ctx context.Context, eventType string, description string, metadata map[string]interface{}) error
 	LogUserRegistrationEventFunc func(ctx context.Context, userID uint, email, phone, role string) error
 	LogConfigChangeFunc        func(ctx context.Context, userID uint, configKey, oldValue, newValue string) error
@@ -82,6 +90,122 @@ func (m *MockComprehensiveAuditService) LogLogout(ctx context.Context, userID ui
 func (m *MockComprehensiveAuditService) LogPasswordReset(ctx context.Context, userID uint, ipAddress string) error {
 	if m.LogPasswordResetFunc != nil {
 		return m.LogPasswordResetFunc(ctx, userID, ipAddress)
+	}
+	return nil
+}
+
+// LogPasswordChangeInitiated implements domain.ComprehensiveAuditService
+func (m *MockComprehensiveAuditService) LogPasswordChangeInitiated(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error {
+	// Track the call
+	m.LoggedEvents = append(m.LoggedEvents, MockAuditEvent{
+		EventType:   "password_change_initiated",
+		UserID:      userID,
+		Success:     true,
+		Description: "Password change initiated",
+		Metadata: map[string]interface{}{
+			"request_id":  requestID,
+			"ip_address":  ipAddress,
+			"user_agent":  userAgent,
+		},
+		Timestamp: time.Now(),
+	})
+	
+	if m.LogPasswordChangeInitiatedFunc != nil {
+		return m.LogPasswordChangeInitiatedFunc(ctx, userID, requestID, ipAddress, userAgent)
+	}
+	return nil
+}
+
+// LogPasswordChangeCompleted implements domain.ComprehensiveAuditService
+func (m *MockComprehensiveAuditService) LogPasswordChangeCompleted(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error {
+	// Track the call
+	m.LoggedEvents = append(m.LoggedEvents, MockAuditEvent{
+		EventType:   "password_change_completed",
+		UserID:      userID,
+		Success:     true,
+		Description: "Password change completed successfully",
+		Metadata: map[string]interface{}{
+			"request_id":  requestID,
+			"ip_address":  ipAddress,
+			"user_agent":  userAgent,
+		},
+		Timestamp: time.Now(),
+	})
+	
+	if m.LogPasswordChangeCompletedFunc != nil {
+		return m.LogPasswordChangeCompletedFunc(ctx, userID, requestID, ipAddress, userAgent)
+	}
+	return nil
+}
+
+// LogPasswordChangeFailed implements domain.ComprehensiveAuditService
+func (m *MockComprehensiveAuditService) LogPasswordChangeFailed(ctx context.Context, userID *uint, requestID, reason, ipAddress, userAgent string) error {
+	// Track the call
+	var trackUserID uint
+	if userID != nil {
+		trackUserID = *userID
+	}
+	
+	m.LoggedEvents = append(m.LoggedEvents, MockAuditEvent{
+		EventType:   "password_change_failed",
+		UserID:      trackUserID,
+		Success:     false,
+		Description: reason,
+		Metadata: map[string]interface{}{
+			"request_id":  requestID,
+			"ip_address":  ipAddress,
+			"user_agent":  userAgent,
+			"reason":      reason,
+		},
+		Timestamp: time.Now(),
+	})
+	
+	if m.LogPasswordChangeFailedFunc != nil {
+		return m.LogPasswordChangeFailedFunc(ctx, userID, requestID, reason, ipAddress, userAgent)
+	}
+	return nil
+}
+
+// LogPasswordChangeCancelled implements domain.ComprehensiveAuditService
+func (m *MockComprehensiveAuditService) LogPasswordChangeCancelled(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error {
+	// Track the call
+	m.LoggedEvents = append(m.LoggedEvents, MockAuditEvent{
+		EventType:   "password_change_cancelled",
+		UserID:      userID,
+		Success:     true,
+		Description: "Password change cancelled by user",
+		Metadata: map[string]interface{}{
+			"request_id":  requestID,
+			"ip_address":  ipAddress,
+			"user_agent":  userAgent,
+		},
+		Timestamp: time.Now(),
+	})
+	
+	if m.LogPasswordChangeCancelledFunc != nil {
+		return m.LogPasswordChangeCancelledFunc(ctx, userID, requestID, ipAddress, userAgent)
+	}
+	return nil
+}
+
+// LogPasswordChangeExpired implements domain.ComprehensiveAuditService
+func (m *MockComprehensiveAuditService) LogPasswordChangeExpired(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error {
+	// Track the call
+	m.LoggedEvents = append(m.LoggedEvents, MockAuditEvent{
+		EventType:   "password_change_expired",
+		UserID:      userID,
+		Success:     false,
+		Description: "Password change request expired",
+		Metadata: map[string]interface{}{
+			"request_id":  requestID,
+			"ip_address":  ipAddress,
+			"user_agent":  userAgent,
+		},
+		Timestamp: time.Now(),
+	})
+	
+	if m.LogPasswordChangeExpiredFunc != nil {
+		return m.LogPasswordChangeExpiredFunc(ctx, userID, requestID, ipAddress, userAgent)
 	}
 	return nil
 }

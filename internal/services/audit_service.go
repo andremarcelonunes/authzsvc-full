@@ -158,6 +158,139 @@ func (s *ComprehensiveAuditServiceImpl) LogPasswordReset(ctx context.Context, us
 	return s.createEvent(ctx, auditEvent)
 }
 
+// LogPasswordChangeInitiated logs when a password change process is initiated
+func (s *ComprehensiveAuditServiceImpl) LogPasswordChangeInitiated(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error {
+	metadata := map[string]interface{}{
+		"request_id": requestID,
+		"user_agent": userAgent,
+		"action":     "password_change_initiated",
+	}
+	
+	auditEvent := &domain.ComprehensiveAuditEvent{
+		EventType:          domain.EventTypePasswordChangeInitiated,
+		EventCategory:      domain.CategoryAuthentication,
+		Timestamp:          time.Now().UTC(),
+		UserID:             &userID,
+		IPAddress:          ipAddress,
+		UserAgent:          userAgent,
+		Success:            true,
+		Action:             "password_change_initiate",
+		LegalBasis:         domain.LegalBasisLegitimateInterests,
+		DataClassification: domain.DataClassificationConfidential,
+		RetentionPolicy:    domain.RetentionPolicyLong,
+		Metadata:           toJSON(metadata),
+	}
+
+	return s.createEvent(ctx, auditEvent)
+}
+
+// LogPasswordChangeCompleted logs when a password change process is successfully completed
+func (s *ComprehensiveAuditServiceImpl) LogPasswordChangeCompleted(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error {
+	metadata := map[string]interface{}{
+		"request_id":         requestID,
+		"user_agent":         userAgent,
+		"action":             "password_change_completed",
+		"sessions_invalidated": true,
+	}
+	
+	auditEvent := &domain.ComprehensiveAuditEvent{
+		EventType:          domain.EventTypePasswordChangeCompleted,
+		EventCategory:      domain.CategoryAuthentication,
+		Timestamp:          time.Now().UTC(),
+		UserID:             &userID,
+		IPAddress:          ipAddress,
+		UserAgent:          userAgent,
+		Success:            true,
+		Action:             "password_change_complete",
+		LegalBasis:         domain.LegalBasisLegitimateInterests,
+		DataClassification: domain.DataClassificationConfidential,
+		RetentionPolicy:    domain.RetentionPolicyLong,
+		Metadata:           toJSON(metadata),
+	}
+
+	return s.createEvent(ctx, auditEvent)
+}
+
+// LogPasswordChangeFailed logs when a password change process fails
+func (s *ComprehensiveAuditServiceImpl) LogPasswordChangeFailed(ctx context.Context, userID *uint, requestID, reason, ipAddress, userAgent string) error {
+	metadata := map[string]interface{}{
+		"request_id": requestID,
+		"user_agent": userAgent,
+		"action":     "password_change_failed",
+		"reason":     reason,
+	}
+	
+	auditEvent := &domain.ComprehensiveAuditEvent{
+		EventType:          domain.EventTypePasswordChangeFailed,
+		EventCategory:      domain.CategoryAuthentication,
+		Timestamp:          time.Now().UTC(),
+		UserID:             userID,
+		IPAddress:          ipAddress,
+		UserAgent:          userAgent,
+		Success:            false,
+		Action:             "password_change_failed",
+		ErrorDetails:       reason,
+		LegalBasis:         domain.LegalBasisLegitimateInterests,
+		DataClassification: domain.DataClassificationConfidential,
+		RetentionPolicy:    domain.RetentionPolicyLong,
+		Metadata:           toJSON(metadata),
+	}
+
+	return s.createEvent(ctx, auditEvent)
+}
+
+// LogPasswordChangeCancelled logs when a password change process is cancelled by the user
+func (s *ComprehensiveAuditServiceImpl) LogPasswordChangeCancelled(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error {
+	metadata := map[string]interface{}{
+		"request_id": requestID,
+		"user_agent": userAgent,
+		"action":     "password_change_cancelled",
+	}
+	
+	auditEvent := &domain.ComprehensiveAuditEvent{
+		EventType:          domain.EventTypePasswordChangeCancelled,
+		EventCategory:      domain.CategoryAuthentication,
+		Timestamp:          time.Now().UTC(),
+		UserID:             &userID,
+		IPAddress:          ipAddress,
+		UserAgent:          userAgent,
+		Success:            true,
+		Action:             "password_change_cancel",
+		LegalBasis:         domain.LegalBasisLegitimateInterests,
+		DataClassification: domain.DataClassificationConfidential,
+		RetentionPolicy:    domain.RetentionPolicyLong,
+		Metadata:           toJSON(metadata),
+	}
+
+	return s.createEvent(ctx, auditEvent)
+}
+
+// LogPasswordChangeExpired logs when a password change request expires
+func (s *ComprehensiveAuditServiceImpl) LogPasswordChangeExpired(ctx context.Context, userID uint, requestID, ipAddress, userAgent string) error {
+	metadata := map[string]interface{}{
+		"request_id": requestID,
+		"user_agent": userAgent,
+		"action":     "password_change_expired",
+	}
+	
+	auditEvent := &domain.ComprehensiveAuditEvent{
+		EventType:          domain.EventTypePasswordChangeExpired,
+		EventCategory:      domain.CategoryAuthentication,
+		Timestamp:          time.Now().UTC(),
+		UserID:             &userID,
+		IPAddress:          ipAddress,
+		UserAgent:          userAgent,
+		Success:            false,
+		Action:             "password_change_expired",
+		LegalBasis:         domain.LegalBasisLegitimateInterests,
+		DataClassification: domain.DataClassificationConfidential,
+		RetentionPolicy:    domain.RetentionPolicyLong,
+		Metadata:           toJSON(metadata),
+	}
+
+	return s.createEvent(ctx, auditEvent)
+}
+
 // Authorization event logging implementations
 
 // LogAuthorizationEvent implements domain.ComprehensiveAuditLogger
