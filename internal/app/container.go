@@ -41,6 +41,10 @@ type Container struct {
 	BusinessValidationSvc     domain.BusinessValidationService
 	RateLimitValidationSvc    domain.RateLimitValidationService
 	RequestValidationSvc      domain.RequestValidationService
+	
+	// Audit services (CB-183)
+	AuditRepo                 domain.ComprehensiveAuditRepository
+	AuditSvc                  domain.ComprehensiveAuditService
 }
 
 // NewContainer creates and initializes all dependencies
@@ -78,7 +82,7 @@ func (c *Container) initDatabase() error {
 	}
 
 	// Auto-migrate
-	if err := db.AutoMigrate(&repositories.DBUser{}); err != nil {
+	if err := db.AutoMigrate(&repositories.DBUser{}, &domain.ComprehensiveAuditEvent{}); err != nil {
 		return err
 	}
 
@@ -98,6 +102,9 @@ func (c *Container) initRedis() error {
 func (c *Container) initRepositories() {
 	c.UserRepo = repositories.NewUserRepository(c.DB)
 	c.SessionRepo = repositories.NewSessionRepository(c.RedisClient, c.Config.RefreshTTL)
+	
+	// Initialize audit repository (CB-183)
+	c.AuditRepo = repositories.NewComprehensiveAuditRepository(c.DB)
 }
 
 func (c *Container) initServices() error {
@@ -114,6 +121,9 @@ func (c *Container) initServices() error {
 		c.Config.TwilioToken,
 		c.Config.TwilioFrom,
 	)
+
+	// Initialize audit service (CB-183)
+	c.AuditSvc = services.NewComprehensiveAuditService(c.AuditRepo, nil, nil, nil, nil, nil, c.Config, nil)
 
 	// Initialize OTP service
 	otpConfig := services.OTPConfig{
@@ -134,7 +144,8 @@ func (c *Container) initServices() error {
 		c.OTPSvc,
 		c.PolicySvc, // Will be initialized separately
 		c.RedisClient,
-		nil, // RequestValidationSvc will be set in initValidationServices
+		nil,        // RequestValidationSvc will be set in initValidationServices
+		c.AuditSvc, // CB-183: Audit service
 	)
 
 	return nil
@@ -215,6 +226,7 @@ func (c *Container) initValidationServices() error {
 		c.PolicySvc,
 		c.RedisClient,
 		c.RequestValidationSvc,
+		c.AuditSvc, // CB-183: Audit service
 	)
 
 	return nil

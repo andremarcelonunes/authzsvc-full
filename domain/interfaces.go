@@ -21,6 +21,7 @@ type SessionRepository interface {
 	FindByID(ctx context.Context, sessionID string) (*Session, error)
 	Delete(ctx context.Context, sessionID string) error
 	DeleteExpired(ctx context.Context) error
+	DeleteAllForUser(ctx context.Context, userID uint) error
 	ExtendTTL(ctx context.Context, sessionID string, ttl time.Duration) error
 	Update(ctx context.Context, session *Session) error
 }
@@ -172,4 +173,37 @@ type RateLimitValidationService interface {
 	UnblockUser(ctx context.Context, userID uint) error
 	BlockIP(ctx context.Context, ipAddress string, duration time.Duration, reason string) error
 	UnblockIP(ctx context.Context, ipAddress string) error
+}
+
+// PasswordChangeRepository defines password change request data access operations
+type PasswordChangeRepository interface {
+	Create(ctx context.Context, request *PasswordChangeRequest) error
+	GetByID(ctx context.Context, id string) (*PasswordChangeRequest, error)
+	GetByUserID(ctx context.Context, userID uint, limit int) ([]*PasswordChangeRequest, error)
+	GetActiveByUserID(ctx context.Context, userID uint) (*PasswordChangeRequest, error)
+	Update(ctx context.Context, request *PasswordChangeRequest) error
+	UpdateStatus(ctx context.Context, id string, status string, reason string) error
+	UpdateOTPAttempts(ctx context.Context, id string, attempts int) error
+	DeleteExpired(ctx context.Context) error
+	CountActiveByUserID(ctx context.Context, userID uint) (int64, error)
+	CountRecentByUserID(ctx context.Context, userID uint, since time.Time) (int64, error)
+}
+
+// PasswordHistoryRepository defines password history data access operations
+type PasswordHistoryRepository interface {
+	Add(ctx context.Context, userID uint, passwordHash string, source string) error
+	GetRecentPasswords(ctx context.Context, userID uint, count int) ([]string, error)
+	CleanupOldHistory(ctx context.Context, userID uint, keepCount int) error
+	CountUserHistory(ctx context.Context, userID uint) (int64, error)
+}
+
+// ForgotPasswordRepository defines forgot password request data access operations
+type ForgotPasswordRepository interface {
+	Create(ctx context.Context, request *ForgotPasswordRequest) error
+	GetByID(ctx context.Context, id string) (*ForgotPasswordRequest, error)
+	Update(ctx context.Context, request *ForgotPasswordRequest) error
+	UpdateStatus(ctx context.Context, id string, status string, reason string) error
+	UpdateOTPAttempts(ctx context.Context, id string, attempts int) error
+	CountRecentByIP(ctx context.Context, ipAddress string, since time.Time) (int64, error)
+	DeleteExpired(ctx context.Context) error
 }

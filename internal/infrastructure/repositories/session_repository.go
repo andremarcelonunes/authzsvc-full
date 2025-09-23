@@ -131,3 +131,53 @@ func (r *SessionRepositoryImpl) Update(ctx context.Context, session *domain.Sess
 	
 	return r.client.Set(ctx, key, data, ttl).Err()
 }
+
+// DeleteAllForUser implements domain.SessionRepository
+func (r *SessionRepositoryImpl) DeleteAllForUser(ctx context.Context, userID uint) error {
+	// Get all session keys using pattern matching
+	pattern := r.prefix + "*"
+	iter := r.client.Scan(ctx, 0, pattern, 0).Iterator()
+	
+	var keysToDelete []string
+	
+	// Iterate through all session keys
+	for iter.Next(ctx) {
+		key := iter.Val()
+		
+		// Get session data
+		data, err := r.client.Get(ctx, key).Result()
+		if err != nil {
+			if err == redis.Nil {
+				continue // Session expired or already deleted
+			}
+			// Log error but continue processing other sessions
+			continue
+		}
+		
+		// Unmarshal session to check user ID
+		var session domain.Session
+		if err := json.Unmarshal([]byte(data), &session); err != nil {
+			// Log error but continue processing other sessions
+			continue
+		}
+		
+		// If this session belongs to the target user, mark for deletion
+		if session.UserID == userID {
+			keysToDelete = append(keysToDelete, key)
+		}
+	}
+	
+	// Check for scan errors
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("failed to scan session keys: %w", err)
+	}
+	
+	// Delete all sessions for the user
+	if len(keysToDelete) > 0 {
+		if err := r.client.Del(ctx, keysToDelete...).Err(); err != nil {
+			return fmt.Errorf("failed to delete sessions for user %d: %w", userID, err)
+		}
+	}
+	
+	return nil
+}

@@ -6,16 +6,16 @@ import (
 	"github.com/you/authzsvc/internal/http/middleware"
 )
 
-func BuildRouter(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware) *gin.Engine {
-	return buildRouterInternal(ah, ph, eh, dh, jwtmw, cb, nil)
+func BuildRouter(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, pch *handlers.PasswordChangeHandlers, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware) *gin.Engine {
+	return buildRouterInternal(ah, ph, eh, dh, pch, jwtmw, cb, nil)
 }
 
 // BuildRouterWithValidation builds router with CB-182 validation middleware
-func BuildRouterWithValidation(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware, validationMW *middleware.ValidationMiddleware) *gin.Engine {
-	return buildRouterInternal(ah, ph, eh, dh, jwtmw, cb, validationMW)
+func BuildRouterWithValidation(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, pch *handlers.PasswordChangeHandlers, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware, validationMW *middleware.ValidationMiddleware) *gin.Engine {
+	return buildRouterInternal(ah, ph, eh, dh, pch, jwtmw, cb, validationMW)
 }
 
-func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware, validationMW *middleware.ValidationMiddleware) *gin.Engine {
+func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, pch *handlers.PasswordChangeHandlers, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware, validationMW *middleware.ValidationMiddleware) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
@@ -62,6 +62,30 @@ func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers,
 			"note": "This endpoint demonstrates SimpleCasbinMW field validation",
 		})
 	})
+
+	// Password management endpoints (authenticated users only)
+	if pch != nil {
+		password := v.Group("/password")
+		
+		// Password change endpoints (require authentication)
+		password.POST("/change", pch.InitiatePasswordChange)
+		password.GET("/change", pch.GetPasswordChangeHistory)
+		password.GET("/change/:id", pch.GetPasswordChangeStatus)
+		password.PUT("/change/:id/verification", pch.CompletePasswordChange)
+		password.DELETE("/change/:id", pch.CancelPasswordChange)
+	}
+
+	// Public password reset endpoints (no authentication required)
+	if pch != nil {
+		passwordPublic := r.Group("/password")
+		if validationMW != nil {
+			passwordPublic.Use(validationMW.ValidateRequest())
+		}
+		
+		// Forgot password endpoints (public access)
+		passwordPublic.POST("/reset", pch.InitiateForgotPassword)
+		passwordPublic.PUT("/reset/:id/complete", pch.CompleteForgotPassword)
+	}
 
 	// Admin endpoints with JWT, Casbin, and optionally validation
 	adm := r.Group("/admin")

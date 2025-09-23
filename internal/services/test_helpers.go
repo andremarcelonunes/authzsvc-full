@@ -47,7 +47,10 @@ func createAuthServiceForTest(t *testing.T,
 	// Leave redisClient as nil for tests that don't need Redis
 	// This allows graceful degradation in blacklist functionality
 
-	return NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator)
+	// Use mock audit service for tests
+	auditSvc := mocks.NewMockComprehensiveAuditService()
+	
+	return NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditSvc)
 }
 
 // createValidUser creates a valid user entity for testing

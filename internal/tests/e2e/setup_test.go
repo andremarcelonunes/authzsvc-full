@@ -164,6 +164,7 @@ func setupTestDatabase(dsn string) (*gorm.DB, *sql.DB, error) {
 	// Run auto-migration to ensure schema is up to date
 	if err := db.AutoMigrate(
 		&domain.User{},
+		&domain.ComprehensiveAuditEvent{}, // CB-183 audit logging
 		// Add other domain entities as they're created
 	); err != nil {
 		return nil, nil, fmt.Errorf("failed to run auto-migration: %w", err)
@@ -286,6 +287,7 @@ func (ts *TestSuite) CleanupTestData() error {
 
 	// Cleanup tables in reverse dependency order
 	tables := []string{
+		"comprehensive_audit_events", // CB-183 audit events
 		"casbin_rule",
 		"users",
 		// Add other tables as needed

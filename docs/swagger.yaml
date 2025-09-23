@@ -70,6 +70,8 @@ tags:
     description: RBAC policy management (admin only)
   - name: External Authorization
     description: Envoy external authorization integration
+  - name: Password Management
+    description: Password change and recovery operations
   - name: Health & Monitoring
     description: Health checks and service monitoring
 
@@ -96,18 +98,19 @@ paths:
               $ref: '#/components/schemas/RegisterRequest'
             examples:
               basic_user:
-                summary: Basic user registration
+                summary: Basic user registration (with optional role)
                 value:
-                  email: user@example.com
-                  password: SecurePass123!
+                  email: "user@example.com"
+                  password: "SecurePass123!"
                   phone: "+1234567890"
+                  role: "user"
               admin_user:
                 summary: Admin user registration
                 value:
-                  email: admin@example.com
-                  password: AdminPass123!
+                  email: "admin@example.com"
+                  password: "AdminPass123!"
                   phone: "+1234567891"
-                  role: admin
+                  role: "admin"
       responses:
         '201':
           description: User registered successfully
@@ -176,13 +179,13 @@ paths:
               user_login:
                 summary: User login
                 value:
-                  email: user@example.com
-                  password: SecurePass123!
+                  email: "user@example.com"
+                  password: "SecurePass123!"
               admin_login:
                 summary: Admin login
                 value:
-                  email: admin@example.com
-                  password: AdminPass123!
+                  email: "admin@example.com"
+                  password: "AdminPass123!"
       responses:
         '200':
           description: Login successful
@@ -631,6 +634,552 @@ paths:
                     error: "User account is inactive"
                     code: 401
                     timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===== PASSWORD MANAGEMENT ENDPOINTS =====
+  /password/change:
+    post:
+      tags: [Password Management]
+      summary: Initiate password change
+      description: |
+        Start a password change process for authenticated users.
+        
+        **Requires authentication**
+        
+        **OTP verification required** before password change is completed.
+        
+        **Rate limiting**: 5 requests per hour per user
+      operationId: initiatePasswordChange
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - current_password
+                - new_password
+                - confirm_password
+              properties:
+                current_password:
+                  type: string
+                  description: Current password for verification
+                  example: "CurrentPass123!"
+                new_password:
+                  type: string
+                  description: New password (minimum 8 characters, must include uppercase, lowercase, number, special char)
+                  example: "NewSecurePass123!"
+                confirm_password:
+                  type: string
+                  description: Confirm new password (must match new_password)
+                  example: "NewSecurePass123!"
+            examples:
+              password_change:
+                summary: Initiate password change
+                value:
+                  current_password: "CurrentPass123!"
+                  new_password: "NewSecurePass123!"
+                  confirm_password: "NewSecurePass123!"
+      responses:
+        '200':
+          description: Password change initiated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      request_id:
+                        type: string
+                        description: Password change request ID
+                        example: "pc_abc123"
+                      status:
+                        type: string
+                        description: Request status
+                        example: "initiated"
+                      message:
+                        type: string
+                        description: Success message
+                        example: "Password change initiated. Please check your phone for OTP verification code."
+                      expires_at:
+                        type: string
+                        format: date-time
+                        description: Request expiration time
+                        example: "2024-01-15T10:35:00Z"
+                      nonce:
+                        type: string
+                        description: Security nonce for request verification
+                        example: "abc123def456"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Password Management]
+      summary: Get password change history
+      description: |
+        Retrieve password change history for the authenticated user.
+        
+        **Requires authentication**
+        
+        **Returns last 10 password changes** with timestamps and status.
+      operationId: getPasswordChangeHistory
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Password change history retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  history:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: Password change request ID
+                          example: "pc_abc123"
+                        status:
+                          type: string
+                          enum: [pending, completed, cancelled, expired]
+                          description: Request status
+                          example: "completed"
+                        created_at:
+                          type: string
+                          format: date-time
+                          description: Request creation time
+                          example: "2024-01-15T10:30:00Z"
+                        completed_at:
+                          type: string
+                          format: date-time
+                          description: Request completion time (if completed)
+                          example: "2024-01-15T10:35:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /password/change/{id}:
+    get:
+      tags: [Password Management]
+      summary: Get password change status
+      description: |
+        Check the status of a specific password change request.
+        
+        **Requires authentication**
+        
+        **User can only check their own requests**
+      operationId: getPasswordChangeStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Password change request ID
+          example: "pc_abc123"
+      responses:
+        '200':
+          description: Password change status retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: Password change request ID
+                    example: "pc_abc123"
+                  status:
+                    type: string
+                    enum: [pending, completed, cancelled, expired]
+                    description: Request status
+                    example: "pending"
+                  created_at:
+                    type: string
+                    format: date-time
+                    description: Request creation time
+                    example: "2024-01-15T10:30:00Z"
+                  expires_at:
+                    type: string
+                    format: date-time
+                    description: Request expiration time
+                    example: "2024-01-15T10:35:00Z"
+                  attempts_remaining:
+                    type: integer
+                    description: OTP verification attempts remaining
+                    example: 3
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Password change request not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [Password Management]
+      summary: Cancel password change
+      description: |
+        Cancel a pending password change request.
+        
+        **Requires authentication**
+        
+        **User can only cancel their own requests**
+        
+        **Cannot cancel completed requests**
+      operationId: cancelPasswordChange
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Password change request ID
+          example: "pc_abc123"
+      responses:
+        '200':
+          description: Password change cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    description: Success message
+                    example: "Password change request cancelled"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Password change request not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /password/change/{id}/verification:
+    put:
+      tags: [Password Management]
+      summary: Complete password change with OTP
+      description: |
+        Complete a password change by providing the OTP verification code.
+        
+        **Requires authentication**
+        
+        **OTP must be verified** to complete password change.
+        
+        **All user sessions invalidated** after successful password change.
+      operationId: completePasswordChange
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Password change request ID
+          example: "pc_abc123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - otp_code
+                - nonce
+              properties:
+                otp_code:
+                  type: string
+                  description: OTP verification code
+                  example: "123456"
+                  pattern: "^[0-9]{6}$"
+                nonce:
+                  type: string
+                  description: Security nonce from password change initiation
+                  example: "abc123def456"
+            examples:
+              complete_password_change:
+                summary: Complete password change with OTP
+                value:
+                  otp_code: "123456"
+                  nonce: "abc123def456"
+      responses:
+        '200':
+          description: Password changed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      request_id:
+                        type: string
+                        description: Password change request ID
+                        example: "pc_abc123"
+                      status:
+                        type: string
+                        description: Request status
+                        example: "completed"
+                      message:
+                        type: string
+                        description: Success message
+                        example: "Password changed successfully. Please login with your new password."
+                      expires_at:
+                        type: string
+                        format: date-time
+                        description: Request expiration time (null when completed)
+                        example: "0001-01-01T00:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Password change request not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /password/reset:
+    post:
+      tags: [Password Management]
+      summary: Initiate password reset
+      description: |
+        Start a password reset process for users who forgot their password.
+        
+        **Public endpoint** - no authentication required.
+        
+        **OTP sent via SMS** to registered phone number.
+        
+        **Rate limiting**: 3 requests per hour per phone number
+      operationId: initiateForgotPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - phone
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: Registered email address
+                  example: "user@example.com"
+                phone:
+                  type: string
+                  description: Registered phone number
+                  example: "+1234567890"
+                  pattern: "^\\+[1-9]\\d{1,14}$"
+            examples:
+              password_reset:
+                summary: Initiate password reset
+                value:
+                  email: "user@example.com"
+                  phone: "+1234567890"
+      responses:
+        '200':
+          description: Password reset initiated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      request_id:
+                        type: string
+                        description: Password reset request ID
+                        example: "pr_abc123"
+                      status:
+                        type: string
+                        description: Request status
+                        example: "initiated"
+                      message:
+                        type: string
+                        description: Success message
+                        example: "If this email and phone combination exists, an OTP has been sent."
+                      expires_at:
+                        type: string
+                        format: date-time
+                        description: Request expiration time
+                        example: "2024-01-15T10:35:00Z"
+                      nonce:
+                        type: string
+                        description: Security nonce for request verification
+                        example: "abc123def456"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Phone number not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                phone_not_found:
+                  summary: Phone number not registered
+                  value:
+                    error: "phone_not_found"
+                    message: "No account found with this phone number"
+                    code: 404
+                    timestamp: "2024-01-15T10:30:00Z"
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                rate_limit:
+                  summary: Rate limit exceeded
+                  value:
+                    error: "rate_limit_exceeded"
+                    message: "Too many password reset attempts. Try again later."
+                    code: 429
+                    timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /password/reset/{id}/complete:
+    put:
+      tags: [Password Management]
+      summary: Complete password reset
+      description: |
+        Complete a password reset by providing OTP and new password.
+        
+        **Public endpoint** - no authentication required.
+        
+        **OTP verification required** to complete password reset.
+        
+        **All user sessions invalidated** after successful password reset.
+      operationId: completeForgotPassword
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Password reset request ID
+          example: "pr_abc123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - otp_code
+                - new_password
+                - confirm_password
+                - nonce
+              properties:
+                otp_code:
+                  type: string
+                  description: OTP verification code
+                  example: "123456"
+                  pattern: "^[0-9]{6}$"
+                new_password:
+                  type: string
+                  description: New password (minimum 8 characters, must include uppercase, lowercase, number, special char)
+                  example: "NewSecurePass123!"
+                confirm_password:
+                  type: string
+                  description: Confirm new password (must match new_password)
+                  example: "NewSecurePass123!"
+                nonce:
+                  type: string
+                  description: Security nonce from password reset initiation
+                  example: "abc123def456"
+            examples:
+              complete_password_reset:
+                summary: Complete password reset with OTP
+                value:
+                  otp_code: "123456"
+                  new_password: "NewSecurePass123!"
+                  confirm_password: "NewSecurePass123!"
+                  nonce: "abc123def456"
+      responses:
+        '200':
+          description: Password reset completed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      request_id:
+                        type: string
+                        description: Password reset request ID
+                        example: "pr_abc123"
+                      status:
+                        type: string
+                        description: Request status
+                        example: "completed"
+                      message:
+                        type: string
+                        description: Success message
+                        example: "Password reset successfully. You can now login with your new password."
+                      expires_at:
+                        type: string
+                        format: date-time
+                        description: Request expiration time (null when completed)
+                        example: "0001-01-01T00:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Password reset request not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/InternalServerError'
 

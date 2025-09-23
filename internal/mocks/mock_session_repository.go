@@ -9,12 +9,13 @@ import (
 
 // MockSessionRepository implements domain.SessionRepository interface for testing
 type MockSessionRepository struct {
-	CreateFunc        func(ctx context.Context, session *domain.Session) error
-	FindByIDFunc      func(ctx context.Context, sessionID string) (*domain.Session, error)
-	DeleteFunc        func(ctx context.Context, sessionID string) error
-	DeleteExpiredFunc func(ctx context.Context) error
-	ExtendTTLFunc     func(ctx context.Context, sessionID string, ttl time.Duration) error
-	UpdateFunc        func(ctx context.Context, session *domain.Session) error
+	CreateFunc           func(ctx context.Context, session *domain.Session) error
+	FindByIDFunc         func(ctx context.Context, sessionID string) (*domain.Session, error)
+	DeleteFunc           func(ctx context.Context, sessionID string) error
+	DeleteExpiredFunc    func(ctx context.Context) error
+	DeleteAllForUserFunc func(ctx context.Context, userID uint) error
+	ExtendTTLFunc        func(ctx context.Context, sessionID string, ttl time.Duration) error
+	UpdateFunc           func(ctx context.Context, session *domain.Session) error
 }
 
 // NewMockSessionRepository creates a new MockSessionRepository with default behaviors
@@ -53,6 +54,15 @@ func (m *MockSessionRepository) Delete(ctx context.Context, sessionID string) er
 func (m *MockSessionRepository) DeleteExpired(ctx context.Context) error {
 	if m.DeleteExpiredFunc != nil {
 		return m.DeleteExpiredFunc(ctx)
+	}
+	// Default behavior: success
+	return nil
+}
+
+// DeleteAllForUser deletes all sessions for a specific user
+func (m *MockSessionRepository) DeleteAllForUser(ctx context.Context, userID uint) error {
+	if m.DeleteAllForUserFunc != nil {
+		return m.DeleteAllForUserFunc(ctx, userID)
 	}
 	// Default behavior: success
 	return nil

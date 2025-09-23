@@ -93,6 +93,94 @@ CREATE TRIGGER update_casbin_rules_updated_at
     FOR EACH ROW EXECUTE FUNCTION auth.update_updated_at_column();
 
 -- ============================================================================
+-- PASSWORD CHANGE REQUESTS TABLE - Track password change operations with OTP
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS auth.password_change_requests (
+    id VARCHAR(255) PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    status VARCHAR(50) NOT NULL DEFAULT 'initiated',
+    requested_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    completed_at TIMESTAMP WITH TIME ZONE NULL,
+    otp_code VARCHAR(255),
+    otp_attempts INTEGER NOT NULL DEFAULT 0,
+    otp_generated_at TIMESTAMP WITH TIME ZONE NULL,
+    otp_expires_at TIMESTAMP WITH TIME ZONE NULL,
+    nonce VARCHAR(255) NOT NULL,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    failure_reason TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for password change requests
+CREATE INDEX IF NOT EXISTS idx_password_change_requests_user_id ON auth.password_change_requests (user_id);
+CREATE INDEX IF NOT EXISTS idx_password_change_requests_status ON auth.password_change_requests (status);
+CREATE INDEX IF NOT EXISTS idx_password_change_requests_requested_at ON auth.password_change_requests (requested_at);
+CREATE INDEX IF NOT EXISTS idx_password_change_requests_expires_at ON auth.password_change_requests (expires_at);
+CREATE INDEX IF NOT EXISTS idx_password_change_requests_completed_at ON auth.password_change_requests (completed_at);
+
+-- Add trigger for password_change_requests updated_at
+CREATE TRIGGER update_password_change_requests_updated_at 
+    BEFORE UPDATE ON auth.password_change_requests 
+    FOR EACH ROW EXECUTE FUNCTION auth.update_updated_at_column();
+
+-- ============================================================================
+-- PASSWORD HISTORY TABLE - Track password history for reuse prevention
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS auth.password_history (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    password_hash VARCHAR(255) NOT NULL,
+    source VARCHAR(50) NOT NULL, -- 'change', 'reset', 'initial'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for password history
+CREATE INDEX IF NOT EXISTS idx_password_history_user_id ON auth.password_history (user_id);
+CREATE INDEX IF NOT EXISTS idx_password_history_created_at ON auth.password_history (created_at);
+CREATE INDEX IF NOT EXISTS idx_password_history_source ON auth.password_history (source);
+
+-- ============================================================================
+-- FORGOT PASSWORD REQUESTS TABLE - Track forgot password operations
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS auth.forgot_password_requests (
+    id VARCHAR(255) PRIMARY KEY,
+    email VARCHAR(255) NOT NULL,
+    phone VARCHAR(20) NOT NULL,
+    user_id INTEGER NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    status VARCHAR(50) NOT NULL DEFAULT 'initiated',
+    requested_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    completed_at TIMESTAMP WITH TIME ZONE NULL,
+    otp_code VARCHAR(255),
+    otp_attempts INTEGER NOT NULL DEFAULT 0,
+    otp_generated_at TIMESTAMP WITH TIME ZONE NULL,
+    otp_expires_at TIMESTAMP WITH TIME ZONE NULL,
+    nonce VARCHAR(255) NOT NULL,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    failure_reason TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for forgot password requests
+CREATE INDEX IF NOT EXISTS idx_forgot_password_requests_email ON auth.forgot_password_requests (email);
+CREATE INDEX IF NOT EXISTS idx_forgot_password_requests_phone ON auth.forgot_password_requests (phone);
+CREATE INDEX IF NOT EXISTS idx_forgot_password_requests_user_id ON auth.forgot_password_requests (user_id);
+CREATE INDEX IF NOT EXISTS idx_forgot_password_requests_status ON auth.forgot_password_requests (status);
+CREATE INDEX IF NOT EXISTS idx_forgot_password_requests_requested_at ON auth.forgot_password_requests (requested_at);
+CREATE INDEX IF NOT EXISTS idx_forgot_password_requests_expires_at ON auth.forgot_password_requests (expires_at);
+CREATE INDEX IF NOT EXISTS idx_forgot_password_requests_ip_address ON auth.forgot_password_requests (ip_address);
+
+-- Add trigger for forgot_password_requests updated_at
+CREATE TRIGGER update_forgot_password_requests_updated_at 
+    BEFORE UPDATE ON auth.forgot_password_requests 
+    FOR EACH ROW EXECUTE FUNCTION auth.update_updated_at_column();
+
+-- ============================================================================
 -- SEED DEFAULT POLICIES - Initial RBAC configuration
 -- ============================================================================
 INSERT INTO auth.casbin_rules (ptype, v0, v1, v2) VALUES 
@@ -100,7 +188,16 @@ INSERT INTO auth.casbin_rules (ptype, v0, v1, v2) VALUES
     ('p', 'admin', '/auth/*', '*'),
     ('p', 'user', '/auth/me', 'GET'),
     ('p', 'user', '/auth/logout', 'POST'),
-    ('p', 'user', '/auth/refresh', 'POST')
+    ('p', 'user', '/auth/refresh', 'POST'),
+    -- Password management endpoints
+    ('p', 'user', '/api/v1/password-changes', 'POST'),
+    ('p', 'user', '/api/v1/password-changes', 'GET'),
+    ('p', 'user', '/api/v1/password-changes/*', 'GET'),
+    ('p', 'user', '/api/v1/password-changes/*/verification', 'PUT'),
+    ('p', 'user', '/api/v1/password-changes/*', 'DELETE'),
+    -- Forgot password endpoints (no authentication required)
+    ('p', '*', '/api/v1/password-reset', 'POST'),
+    ('p', '*', '/api/v1/password-reset/*/complete', 'PUT')
 ON CONFLICT (ptype, v0, v1, v2, v3, v4, v5) DO NOTHING;
 
 -- ============================================================================
@@ -123,16 +220,24 @@ BEGIN
     -- Delete test users (emails starting with 'test_' or containing '.test')
     DELETE FROM auth.users WHERE email LIKE 'test_%' OR email LIKE '%.test%';
     
+    -- Clean up password management test data
+    DELETE FROM auth.password_change_requests WHERE id LIKE 'test_%';
+    DELETE FROM auth.forgot_password_requests WHERE id LIKE 'test_%';
+    DELETE FROM auth.password_history WHERE user_id IN (
+        SELECT id FROM auth.users WHERE email LIKE 'test_%' OR email LIKE '%.test%'
+    );
+    
     -- Clean up test policies (but preserve default ones)
     DELETE FROM auth.casbin_rules 
     WHERE (v0 LIKE 'test_%' OR v1 LIKE 'test_%' OR v2 LIKE 'test_%')
-    AND NOT (ptype = 'p' AND v0 IN ('admin', 'user'));
+    AND NOT (ptype = 'p' AND v0 IN ('admin', 'user', '*'));
     
     -- Reset sequences if needed for consistent test IDs
     PERFORM setval('auth.users_id_seq', (SELECT COALESCE(MAX(id), 0) FROM auth.users) + 1, false);
     PERFORM setval('auth.casbin_rules_id_seq', (SELECT COALESCE(MAX(id), 0) FROM auth.casbin_rules) + 1, false);
+    PERFORM setval('auth.password_history_id_seq', (SELECT COALESCE(MAX(id), 0) FROM auth.password_history) + 1, false);
     
-    RAISE NOTICE 'Test data cleanup completed - removed test users and policies';
+    RAISE NOTICE 'Test data cleanup completed - removed test users, password data, and policies';
 END;
 $$ LANGUAGE plpgsql;
 

@@ -105,8 +105,9 @@ func (vm *ValidationMiddleware) ValidateRequest() gin.HandlerFunc {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), vm.config.ValidationTimeout)
 		defer cancel()
 		
-		// Phase 1: Rate limiting validation (if enabled)
-		if vm.config.EnableRateLimiting {
+		// Phase 1: HTTP Layer Rate limiting validation (complementary to service layer)
+		// HTTP middleware rate limiting for general endpoint protection
+		if true {
 			if err := vm.validateRateLimit(ctx, validationCtx, c); err != nil {
 				vm.handleRateLimitExceeded(c, err, validationCtx)
 				return
@@ -171,8 +172,26 @@ func (vm *ValidationMiddleware) ValidateRequest() gin.HandlerFunc {
 			if requestMap, ok := requestBody.(map[string]interface{}); ok {
 				phone, _ := requestMap["phone"].(string)
 				code, _ := requestMap["code"].(string)
-				userID, _ := requestMap["user_id"].(uint)
+				// Fix: JSON unmarshals numbers as float64, convert to uint
+				var userID uint
+				if userIDFloat, ok := requestMap["user_id"].(float64); ok {
+					userID = uint(userIDFloat)
+				}
 				validationResult, validationErr = vm.requestValidator.ValidateOTPRequest(ctx, phone, code, userID, validationCtx)
+			} else {
+				validationResult, validationErr = vm.requestValidator.ValidateRequest(ctx, requestBody, validationCtx)
+			}
+		case "/auth/otp/send":
+			// Extract fields from request body for OTP send validation
+			if requestMap, ok := requestBody.(map[string]interface{}); ok {
+				phone, _ := requestMap["phone"].(string)
+				// Fix: JSON unmarshals numbers as float64, convert to uint
+				var userID uint
+				if userIDFloat, ok := requestMap["user_id"].(float64); ok {
+					userID = uint(userIDFloat)
+				}
+				// Use empty code for OTP send validation (we're sending, not verifying)
+				validationResult, validationErr = vm.requestValidator.ValidateOTPRequest(ctx, phone, "", userID, validationCtx)
 			} else {
 				validationResult, validationErr = vm.requestValidator.ValidateRequest(ctx, requestBody, validationCtx)
 			}
@@ -455,6 +474,8 @@ func (vm *ValidationMiddleware) validateOTPBusinessRules(ctx context.Context, re
 		userID = uint(userIDFloat)
 	}
 	
+	// For OTP send requests, there's no code field, so we pass empty string
+	// The business validator will skip code format validation for empty codes
 	result, err := vm.businessValidator.ValidateOTPRules(ctx, phone, code, userID)
 	if err != nil {
 		return err
@@ -699,9 +720,9 @@ func (vm *ValidationMiddleware) isSensitiveHeader(headerName string) bool {
 }
 
 func (vm *ValidationMiddleware) getRateLimitForEndpoint(endpoint string) int {
-	// Define rate limits per endpoint
+	// Define rate limits per endpoint (per minute)
 	rateLimits := map[string]int{
-		"/auth/register": 5,   // 5 registrations per minute
+		"/auth/register": 4,   // 4 registrations per minute (matches 2 per 30 seconds in service)
 		"/auth/login":    10,  // 10 login attempts per minute
 		"/auth/otp":      3,   // 3 OTP requests per minute
 		"/auth/refresh":  20,  // 20 token refreshes per minute

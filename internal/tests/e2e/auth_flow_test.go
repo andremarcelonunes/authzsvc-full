@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/you/authzsvc/domain"
+	"github.com/you/authzsvc/internal/infrastructure/repositories"
 )
 
 // TestCompleteAuthenticationFlow tests the complete end-to-end authentication journey
@@ -29,7 +31,7 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 
 	// Test user data
 	email := generateTestEmail()
-	phone := "+15551234567"
+	phone := fmt.Sprintf("+1555%07d", time.Now().UnixNano()%10000000) // Unique phone per test
 	password := "SecurePassword123!"
 
 	t.Run("complete user journey: register -> verify OTP -> login -> access protected -> refresh -> logout", func(t *testing.T) {
@@ -44,13 +46,13 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 		body, _ := json.Marshal(regBody)
 		req, _ := http.NewRequest("POST", helper.URL("/auth/register"), bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
-		
+
 		regResp := helper.DoRequest(req)
 		regDuration := time.Since(start)
 		t.Logf("Performance [registration]: %v (%d)", regDuration, regResp.StatusCode)
 		require.Equal(t, http.StatusCreated, regResp.StatusCode, "Registration should succeed")
 		regResp.Body.Close()
-		
+
 		// Verify user created in database
 		var user domain.User
 		err := suite.DB.Where("email = ?", email).First(&user).Error
@@ -70,14 +72,14 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 		// Step 2: OTP Verification
 		start = time.Now()
 		otpBody := map[string]interface{}{
-			"phone": phone,
-			"code":  otpCode,
+			"phone":   phone,
+			"code":    otpCode,
 			"user_id": user.ID,
 		}
 		body, _ = json.Marshal(otpBody)
 		req, _ = http.NewRequest("POST", helper.URL("/auth/otp/verify"), bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
-		
+
 		otpResp := helper.DoRequest(req)
 		otpDuration := time.Since(start)
 		// Record performance manually
@@ -108,7 +110,7 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 		start = time.Now()
 		loginResp := helper.DoRequest(req)
 		loginDuration := time.Since(start)
-		
+
 		require.Equal(t, http.StatusOK, loginResp.StatusCode, "Login should succeed")
 
 		var loginRespBody map[string]interface{}
@@ -138,7 +140,7 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 		sessionKey := fmt.Sprintf("session:%s", sessionID) // Use session: prefix as per SessionRepository
 		sessionData, err := suite.Redis.Get(ctx, sessionKey).Result()
 		require.NoError(t, err, "Session should exist in Redis")
-		
+
 		// Session is stored as JSON, decode it
 		var session domain.Session
 		err = json.Unmarshal([]byte(sessionData), &session)
@@ -162,7 +164,7 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 
 		// Extract user data from nested response structure
 		userData := meRespBody["data"].(map[string]interface{})
-		
+
 		// Validate user profile data
 		assert.Equal(t, float64(user.ID), userData["id"])
 		assert.Equal(t, email, userData["email"])
@@ -232,7 +234,7 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+newAccessToken)
 
 		tokenCheckResp := helper.DoRequest(req)
-		assert.Equal(t, http.StatusUnauthorized, tokenCheckResp.StatusCode, 
+		assert.Equal(t, http.StatusUnauthorized, tokenCheckResp.StatusCode,
 			"Access token should be invalid after logout")
 		tokenCheckResp.Body.Close()
 
@@ -254,7 +256,7 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 		assert.Less(t, logoutDuration, 100*time.Millisecond, "Logout should be < 100ms")
 
 		totalFlowDuration := regDuration + otpDuration + loginDuration + meDuration + refreshDuration + logoutDuration
-		assert.Less(t, totalFlowDuration, 500*time.Millisecond, 
+		assert.Less(t, totalFlowDuration, 500*time.Millisecond,
 			"Complete authentication flow should be < 500ms total")
 
 		// Cleanup
@@ -332,8 +334,11 @@ func TestAuthFlowErrorScenarios(t *testing.T) {
 	t.Run("OTP verification with wrong code fails", func(t *testing.T) {
 		// Setup: Register user to generate OTP
 		email := generateTestEmail()
-		phone := "+15551111111"
+		phone := generateTestPhone() // Use unique phone instead of hardcoded
 		password := "TestPassword123!"
+
+		// Clean up any existing users with this email/phone first
+		suite.DB.Unscoped().Where("email = ? OR phone = ?", email, phone).Delete(&repositories.DBUser{})
 
 		reqBody := map[string]string{
 			"email":    email,
@@ -346,6 +351,12 @@ func TestAuthFlowErrorScenarios(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 
 		regResp := helper.DoRequest(req)
+		if regResp.StatusCode != http.StatusCreated {
+			// Log error for debugging
+			body, _ := io.ReadAll(regResp.Body)
+			regResp.Body.Close()
+			t.Logf("Registration failed with status %d: %s", regResp.StatusCode, string(body))
+		}
 		require.Equal(t, http.StatusCreated, regResp.StatusCode)
 		regResp.Body.Close()
 
@@ -356,8 +367,8 @@ func TestAuthFlowErrorScenarios(t *testing.T) {
 
 		// Attempt OTP verification with wrong code
 		otpBody := map[string]interface{}{
-			"phone": phone,
-			"code":  "000000", // Wrong code
+			"phone":   phone,
+			"code":    "000000", // Wrong code
 			"user_id": user.ID,
 		}
 		body, _ = json.Marshal(otpBody)
@@ -375,7 +386,7 @@ func TestAuthFlowErrorScenarios(t *testing.T) {
 		assert.Contains(t, respBody["error"], "Invalid OTP")
 
 		// Cleanup
-		suite.DB.Where("email = ?", email).Delete(&domain.User{})
+		suite.DB.Where("email = ?", email).Delete(&repositories.DBUser{})
 	})
 
 	t.Run("accessing protected endpoints without token fails", func(t *testing.T) {
@@ -440,8 +451,22 @@ func TestAuthFlowConcurrency(t *testing.T) {
 	helper.MustStart()
 	helper.MustWaitForReady()
 
+	// Add delay to ensure clean state from previous tests
+	time.Sleep(500 * time.Millisecond)
+
 	t.Run("concurrent user registrations succeed", func(t *testing.T) {
 		const concurrentUsers = 5
+
+		// Clean up any existing concurrent test users before starting
+		suite.DB.Unscoped().Where("email LIKE ?", "concurrent.%.%").Delete(&repositories.DBUser{})
+
+		// Additional cleanup - clear any Redis keys that might interfere
+		ctx := context.Background()
+		keys, _ := suite.Redis.Keys(ctx, "*concurrent*").Result()
+		if len(keys) > 0 {
+			suite.Redis.Del(ctx, keys...)
+		}
+
 		results := make(chan error, concurrentUsers)
 
 		// Create concurrent registrations
@@ -449,7 +474,7 @@ func TestAuthFlowConcurrency(t *testing.T) {
 			go func(index int) {
 				email := fmt.Sprintf("concurrent.%d.%s", index, generateTestEmail())
 				phone := fmt.Sprintf("+1555%07d", 2000000+index)
-				
+
 				reqBody := map[string]string{
 					"email":    email,
 					"phone":    phone,
@@ -461,12 +486,15 @@ func TestAuthFlowConcurrency(t *testing.T) {
 				req.Header.Set("Content-Type", "application/json")
 
 				resp := helper.DoRequest(req)
-				resp.Body.Close()
 
+				// Read response body for better error reporting
 				if resp.StatusCode != http.StatusCreated {
-					results <- fmt.Errorf("registration %d failed with status %d", index, resp.StatusCode)
+					respBody, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					results <- fmt.Errorf("registration %d failed with status %d: %s", index, resp.StatusCode, string(respBody))
 					return
 				}
+				resp.Body.Close()
 
 				results <- nil
 			}(i)
@@ -494,8 +522,8 @@ func TestAuthFlowConcurrency(t *testing.T) {
 		}
 
 		// Cleanup concurrent test users
-		suite.DB.Where("email LIKE ?", "concurrent.%.%").Delete(&domain.User{})
-		
+		suite.DB.Where("email LIKE ?", "concurrent.%.%").Delete(&repositories.DBUser{})
+
 		t.Logf("Successfully created %d users concurrently", concurrentUsers)
 	})
 
@@ -515,7 +543,7 @@ func TestAuthFlowConcurrency(t *testing.T) {
 		for i := 0; i < concurrentLogins; i++ {
 			go func(index int) {
 				tokens := loginUserForTest(t, helper, user.Email, opts.Password)
-				
+
 				if tokens == nil {
 					errors <- fmt.Errorf("login %d failed", index)
 					return
@@ -594,7 +622,10 @@ func TestAuthFlowDatabaseTransactions(t *testing.T) {
 		initialCount := dbHelper.CountRecordsT("users")
 
 		email := generateTestEmail()
-		phone := "+15552222222"
+		phone := generateTestPhone() // Use unique phone instead of hardcoded
+
+		// Clean up any existing users with this email/phone first
+		suite.DB.Unscoped().Where("email = ? OR phone = ?", email, phone).Delete(&repositories.DBUser{})
 
 		reqBody := map[string]string{
 			"email":    email,
@@ -607,6 +638,12 @@ func TestAuthFlowDatabaseTransactions(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 
 		resp := helper.DoRequest(req)
+		if resp.StatusCode != http.StatusCreated {
+			// Log error for debugging
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Logf("Registration failed with status %d: %s", resp.StatusCode, string(respBody))
+		}
 		require.Equal(t, http.StatusCreated, resp.StatusCode)
 		resp.Body.Close()
 
@@ -618,7 +655,7 @@ func TestAuthFlowDatabaseTransactions(t *testing.T) {
 		var user domain.User
 		err := suite.DB.Where("email = ?", email).First(&user).Error
 		require.NoError(t, err)
-		
+
 		assert.Equal(t, email, user.Email)
 		assert.Equal(t, phone, user.Phone)
 		assert.NotEmpty(t, user.PasswordHash)
@@ -704,4 +741,3 @@ func loginUserForTest(t *testing.T, helper *ServerTestHelper, email, password st
 	}
 	return respBody
 }
-

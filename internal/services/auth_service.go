@@ -22,6 +22,9 @@ type AuthServiceImpl struct {
 	
 	// Validation services
 	requestValidator domain.RequestValidationService
+	
+	// Audit logging service - CB-183
+	auditSvc        domain.ComprehensiveAuditService
 }
 
 // NewAuthService creates a new auth service
@@ -34,6 +37,7 @@ func NewAuthService(
 	policySvc domain.PolicyService,
 	redisClient *redis.Client,
 	requestValidator domain.RequestValidationService,
+	auditSvc domain.ComprehensiveAuditService,
 ) domain.AuthService {
 	return &AuthServiceImpl{
 		userRepo:         userRepo,
@@ -44,6 +48,7 @@ func NewAuthService(
 		policySvc:        policySvc,
 		redisClient:      redisClient,
 		requestValidator: requestValidator,
+		auditSvc:         auditSvc,
 	}
 }
 
@@ -51,11 +56,18 @@ func NewAuthService(
 func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, role string) (*domain.User, error) {
 	// Validate registration request if validator is available
 	if s.requestValidator != nil {
+		// Get client IP from context if available
+		clientIP := "127.0.0.1" // default
+		if ip, ok := ctx.Value("client_ip").(string); ok && ip != "" {
+			clientIP = ip
+		}
+		
 		validationCtx := &domain.ValidationContext{
-			RequestID: fmt.Sprintf("reg_%d", time.Now().UnixNano()),
-			Endpoint:  "/auth/register",
-			Method:    "POST",
-			Timestamp: time.Now(),
+			RequestID:  fmt.Sprintf("reg_%d", time.Now().UnixNano()),
+			Endpoint:   "/auth/register",
+			Method:     "POST",
+			Timestamp:  time.Now(),
+			IPAddress:  clientIP,
 		}
 		
 		validationResult, err := s.requestValidator.ValidateRegistrationRequest(ctx, email, phone, password, role, validationCtx)
@@ -72,9 +84,15 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 		}
 	}
 
-	// Check if user already exists
+	// Check if user already exists by email
 	existingUser, err := s.userRepo.FindByEmail(ctx, email)
 	if err == nil && existingUser != nil {
+		return nil, domain.ErrUserAlreadyExists
+	}
+
+	// Check if user already exists by phone
+	existingUserByPhone, err := s.userRepo.FindByPhone(ctx, phone)
+	if err == nil && existingUserByPhone != nil {
 		return nil, domain.ErrUserAlreadyExists
 	}
 
@@ -96,7 +114,27 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 	}
 
 	if err := s.userRepo.Create(ctx, user); err != nil {
+		// Log failed registration attempt - CB-183
+		if s.auditSvc != nil {
+			s.auditSvc.LogSystemEvent(ctx, "user_registration_failed", 
+				fmt.Sprintf("Failed to register user with email %s", email), 
+				map[string]interface{}{
+					"email": email,
+					"phone": phone,
+					"role":  role,
+					"error": err.Error(),
+				})
+		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	// Log successful registration - CB-183
+	if s.auditSvc != nil {
+		auditErr := s.auditSvc.LogUserRegistrationEvent(ctx, user.ID, email, phone, role)
+		if auditErr != nil {
+			// Log audit error but don't fail registration (graceful degradation)
+			// In production, this could be logged to a monitoring system
+		}
 	}
 
 	// Generate and send OTP
@@ -104,7 +142,7 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to send OTP: %w", err)
 	}
-
+	
 	return user, nil
 }
 
@@ -136,21 +174,37 @@ func (s *AuthServiceImpl) Login(ctx context.Context, email, password string) (*d
 	// Find user
 	user, err := s.userRepo.FindByEmail(ctx, email)
 	if err != nil {
+		// Log failed login attempt - user not found - CB-183
+		if s.auditSvc != nil {
+			s.auditSvc.LogLoginAttempt(ctx, 0, email, "", false, "user not found")
+		}
 		return nil, domain.ErrInvalidCredentials
 	}
 
 	// Check if user is active
 	if !user.IsActive {
+		// Log failed login attempt - user inactive - CB-183
+		if s.auditSvc != nil {
+			s.auditSvc.LogLoginAttempt(ctx, user.ID, email, "", false, "user inactive")
+		}
 		return nil, domain.ErrUserInactive
 	}
 
 	// Check if phone is verified
 	if !user.PhoneVerified {
+		// Log failed login attempt - phone not verified - CB-183
+		if s.auditSvc != nil {
+			s.auditSvc.LogLoginAttempt(ctx, user.ID, email, "", false, "phone not verified")
+		}
 		return nil, domain.ErrPhoneNotVerified
 	}
 
 	// Verify password
 	if !s.passwordSvc.Verify(user.PasswordHash, password) {
+		// Log failed login attempt - invalid password - CB-183
+		if s.auditSvc != nil {
+			s.auditSvc.LogLoginAttempt(ctx, user.ID, email, "", false, "invalid password")
+		}
 		return nil, domain.ErrInvalidCredentials
 	}
 
@@ -175,6 +229,11 @@ func (s *AuthServiceImpl) Login(ctx context.Context, email, password string) (*d
 	refreshToken, err := s.tokenSvc.GenerateRefreshToken(user.ID, user.Role, session.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
+	}
+
+	// Log successful login - CB-183
+	if s.auditSvc != nil {
+		s.auditSvc.LogLoginAttempt(ctx, user.ID, email, "", true, "login successful")
 	}
 
 	return &domain.AuthResult{

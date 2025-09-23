@@ -14,28 +14,29 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
+	"github.com/you/authzsvc/domain"
 	"github.com/you/authzsvc/internal/config"
-	"github.com/you/authzsvc/internal/http/handlers"
 	httpx "github.com/you/authzsvc/internal/http"
+	"github.com/you/authzsvc/internal/http/handlers"
 	"github.com/you/authzsvc/internal/http/middleware"
 	"github.com/you/authzsvc/internal/infrastructure/auth"
 	"github.com/you/authzsvc/internal/infrastructure/repositories"
-	"github.com/you/authzsvc/internal/services"
 	"github.com/you/authzsvc/internal/mocks"
+	"github.com/you/authzsvc/internal/services"
 )
 
 // TestServer wraps the HTTP test server with E2E testing capabilities
 type TestServer struct {
-	Server      *httptest.Server
-	Router      *gin.Engine
-	Config      *config.Config
-	DB          *gorm.DB
-	Redis       *redis.Client
-	BaseURL     string
-	Client      *http.Client
-	mu          sync.RWMutex
-	started     bool
-	metrics     *ServerMetrics
+	Server  *httptest.Server
+	Router  *gin.Engine
+	Config  *config.Config
+	DB      *gorm.DB
+	Redis   *redis.Client
+	BaseURL string
+	Client  *http.Client
+	mu      sync.RWMutex
+	started bool
+	metrics *ServerMetrics
 }
 
 // ServerMetrics tracks performance metrics for E2E tests
@@ -93,7 +94,7 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 	// Clean up old format Casbin policies from database first
 	// This prevents "invalid policy rule size" errors from old 3-column policies
 	suite.DB.Exec("DELETE FROM casbin_rule")
-	
+
 	// Initialize Casbin service
 	cas, err := auth.NewCasbinService(suite.DB, suite.Config.CasbinModelPath)
 	if err != nil {
@@ -115,6 +116,7 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 	// Initialize repositories
 	userRepo := repositories.NewUserRepository(suite.DB)
 	sessionRepo := repositories.NewSessionRepository(suite.Redis, suite.Config.RefreshTTL)
+	auditRepo := repositories.NewComprehensiveAuditRepository(suite.DB)
 
 	// Initialize services
 	otpConfig := services.OTPConfig{
@@ -130,14 +132,75 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 
 	// Initialize validation service mock for testing
 	requestValidator := mocks.NewMockRequestValidationService()
-	
-	// Initialize auth service
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis, requestValidator)
+
+	// Configure validation to always pass for E2E tests (prevent blocking registration)
+	requestValidator.ValidateRegistrationRequestFunc = func(ctx context.Context, email, phone, password, role string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return &domain.ValidationResult{
+			IsValid:        true,
+			Passed:         true,
+			ValidationTime: 10 * time.Millisecond,
+		}, nil
+	}
+	requestValidator.ValidateLoginRequestFunc = func(ctx context.Context, email, password string, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return &domain.ValidationResult{
+			IsValid:        true,
+			Passed:         true,
+			ValidationTime: 10 * time.Millisecond,
+		}, nil
+	}
+	requestValidator.ValidateOTPRequestFunc = func(ctx context.Context, phone, code string, userID uint, validationCtx *domain.ValidationContext) (*domain.ValidationResult, error) {
+		return &domain.ValidationResult{
+			IsValid:        true,
+			Passed:         true,
+			ValidationTime: 10 * time.Millisecond,
+		}, nil
+	}
+
+	// Initialize audit service for CB-183 (minimal setup for testing)
+	auditSvc := services.NewComprehensiveAuditService(auditRepo, nil, nil, nil, nil, nil, suite.Config, nil)
+
+	// Initialize auth service with audit logging
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis, requestValidator, auditSvc)
 
 	// Initialize handlers
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo)
 	polH := &handlers.PolicyHandlers{E: cas.E}
 	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E)
+
+	// Initialize password change service and handlers
+	passwordChangeRepo := repositories.NewPasswordChangeRepository(suite.DB)
+	passwordHistoryRepo := repositories.NewPasswordHistoryRepository(suite.DB)
+	forgotPasswordRepo := repositories.NewForgotPasswordRepository(suite.DB)
+
+	// Create password change config from main config
+	passwordChangeConfig := services.PasswordChangeConfig{
+		RequestTTL:              15 * time.Minute,
+		OTPTTL:                  5 * time.Minute,
+		MaxOTPAttempts:          3,
+		PasswordHistoryCount:    5,
+		RateLimitWindow:         time.Hour,
+		MaxRequestsPerWindow:    3,
+		ForgotPasswordRateLimit: 5,
+		MinPasswordLength:       8,
+		RequireUppercase:        true,
+		RequireLowercase:        true,
+		RequireNumbers:          true,
+		RequireSpecialChars:     true,
+		ForbiddenPasswords:      []string{"password", "123456", "qwerty"},
+	}
+
+	passwordChangeSvc := services.NewPasswordChangeService(
+		passwordChangeRepo,
+		passwordHistoryRepo,
+		forgotPasswordRepo,
+		userRepo,
+		passwordSvc,
+		otpSvc,
+		sessionRepo,
+		auditSvc,
+		passwordChangeConfig,
+	)
+	passwordChangeH := handlers.NewPasswordChangeHandlers(passwordChangeSvc)
 
 	// Initialize middleware
 	jwtMW := middleware.NewAuthMW(tokenSvc, sessionRepo)
@@ -145,27 +208,27 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 
 	// Build and return router
 	docsH := handlers.NewSwaggerDocsHandler()
-	router := httpx.BuildRouter(authH, polH, externalAuthzH, docsH, jwtMW, casbinMW)
+	router := httpx.BuildRouter(authH, polH, externalAuthzH, docsH, passwordChangeH, jwtMW, casbinMW)
 
 	// Always clear and re-seed policies for consistent test environment
 	// Clear both in-memory and database policies
 	cas.E.ClearPolicy()
-	
+
 	// Clear database completely and re-save empty policy to ensure clean state
 	_ = cas.E.SavePolicy()
-	
+
 	// ===== ROLE INHERITANCE APPROACH (matching production) =====
 	// Define base user permissions ONCE
 	cas.E.AddPolicy("role_user", "/auth/me", "GET", "*")
 	cas.E.AddPolicy("role_user", "/auth/logout", "POST", "*")
 	cas.E.AddPolicy("role_user", "/auth/otp/*", "POST", "*")
-	
+
 	// Define admin-specific permissions
 	cas.E.AddPolicy("role_admin", "/admin/*", "(GET|POST|PUT|DELETE)", "*")
-	
+
 	// Make admin inherit ALL user permissions automatically
 	cas.E.AddGroupingPolicy("role_admin", "role_user")
-	
+
 	// Save all policies to database
 	_ = cas.E.SavePolicy()
 
@@ -236,7 +299,7 @@ func (m *MockNotificationService) GetLastMessage() *MockMessage {
 func (m *MockNotificationService) GetMessageCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	return len(m.SentMessages)
 }
 
@@ -244,7 +307,7 @@ func (m *MockNotificationService) GetMessageCount() int {
 func (m *MockNotificationService) ClearMessages() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.SentMessages = m.SentMessages[:0]
 }
 
@@ -290,7 +353,7 @@ func (ts *TestServer) URL(path string) string {
 	if !ts.started {
 		panic("test server not started")
 	}
-	
+
 	return ts.BaseURL + path
 }
 
@@ -337,9 +400,9 @@ func (ts *TestServer) WaitForReady(timeout time.Duration) error {
 // DoRequest performs an HTTP request with performance tracking
 func (ts *TestServer) DoRequest(req *http.Request) (*http.Response, error) {
 	start := time.Now()
-	
+
 	resp, err := ts.Client.Do(req)
-	
+
 	duration := time.Since(start)
 	ts.recordRequestDuration(duration)
 
@@ -350,7 +413,7 @@ func (ts *TestServer) DoRequest(req *http.Request) (*http.Response, error) {
 func (ts *TestServer) recordRequestDuration(duration time.Duration) {
 	ts.metrics.mu.Lock()
 	defer ts.metrics.mu.Unlock()
-	
+
 	ts.metrics.RequestDurations = append(ts.metrics.RequestDurations, duration)
 }
 
@@ -387,7 +450,7 @@ func calculateMetrics(durations []time.Duration) ServerMetricsReport {
 	// Sort durations for percentile calculations
 	sorted := make([]time.Duration, len(durations))
 	copy(sorted, durations)
-	
+
 	// Simple bubble sort for small test datasets
 	for i := 0; i < len(sorted)-1; i++ {
 		for j := 0; j < len(sorted)-i-1; j++ {
@@ -458,7 +521,7 @@ func (ts *TestServer) ValidatePerformance(t *testing.T) {
 	// Detect if running with race detection or other overhead based on actual performance
 	// If average time is significantly higher than normal, use relaxed thresholds
 	var p95Threshold, avgThreshold time.Duration
-	
+
 	// Heuristic: if average > 200ms, likely running with race detection or heavy load
 	if metrics.AverageTime > 200*time.Millisecond {
 		// Race detection or high overhead detected - use relaxed thresholds
@@ -485,17 +548,16 @@ func (ts *TestServer) ValidatePerformance(t *testing.T) {
 	t.Logf("  Average Time: %v", metrics.AverageTime)
 	t.Logf("  P95 Time: %v", metrics.P95Time)
 	t.Logf("  P99 Time: %v", metrics.P99Time)
-	t.Logf("  Under 100ms: %d/%d (%.1f%%)", 
+	t.Logf("  Under 100ms: %d/%d (%.1f%%)",
 		metrics.Under100ms, metrics.TotalRequests,
 		float64(metrics.Under100ms)*100/float64(metrics.TotalRequests))
 }
-
 
 // Reset clears all metrics and prepares for new test runs
 func (ts *TestServer) Reset() {
 	ts.metrics.mu.Lock()
 	defer ts.metrics.mu.Unlock()
-	
+
 	ts.metrics.RequestDurations = nil
 }
 
@@ -508,7 +570,7 @@ type ServerTestHelper struct {
 // NewServerTestHelper creates a helper for test server operations
 func NewServerTestHelper(t *testing.T, server *TestServer) *ServerTestHelper {
 	t.Helper()
-	
+
 	return &ServerTestHelper{
 		Server: server,
 		t:      t,
@@ -518,7 +580,7 @@ func NewServerTestHelper(t *testing.T, server *TestServer) *ServerTestHelper {
 // MustStart starts the server or fails the test
 func (h *ServerTestHelper) MustStart() {
 	h.t.Helper()
-	
+
 	if err := h.Server.Start(); err != nil {
 		h.t.Fatalf("Failed to start test server: %v", err)
 	}
@@ -527,7 +589,7 @@ func (h *ServerTestHelper) MustStart() {
 // MustWaitForReady waits for server to be ready or fails the test
 func (h *ServerTestHelper) MustWaitForReady() {
 	h.t.Helper()
-	
+
 	if err := h.Server.WaitForReady(10 * time.Second); err != nil {
 		h.t.Fatalf("Test server not ready: %v", err)
 	}
@@ -542,11 +604,11 @@ func (h *ServerTestHelper) URL(path string) string {
 // DoRequest performs a request with automatic error handling
 func (h *ServerTestHelper) DoRequest(req *http.Request) *http.Response {
 	h.t.Helper()
-	
+
 	resp, err := h.Server.DoRequest(req)
 	if err != nil {
 		h.t.Fatalf("Request failed: %v", err)
 	}
-	
+
 	return resp
 }

@@ -54,6 +54,8 @@ var (
 	ErrFieldFormatInvalid   = errors.New("field format is invalid")
 	ErrCrossFieldValidation = errors.New("cross-field validation failed")
 	ErrBusinessRuleViolation = errors.New("business rule violation")
+	ErrInvalidUUID          = errors.New("invalid UUID format")
+	ErrInvalidUserID        = errors.New("invalid user ID format")
 )
 
 // Security validation errors
@@ -85,4 +87,47 @@ var (
 	ErrInvalidValidationRule  = errors.New("invalid validation rule configuration")
 	ErrRuleConflict          = errors.New("validation rule conflict detected")
 	ErrCustomValidatorNotFound = errors.New("custom validator not found")
+)
+
+// Audit errors
+var (
+	ErrAuditEventNotFound    = errors.New("audit event not found")
+	ErrAuditRepositoryError  = errors.New("audit repository error")
+	ErrAuditEncryptionFailed = errors.New("audit data encryption failed")
+	ErrAuditIntegrityFailed  = errors.New("audit integrity check failed")
+	ErrAuditExportFailed     = errors.New("audit export failed")
+)
+
+// Password change errors
+var (
+	ErrPasswordChangeInProgress        = errors.New("password change already in progress")
+	ErrPasswordChangeRateLimitExceeded = errors.New("password change rate limit exceeded")
+	ErrPasswordChangeExpired           = errors.New("password change request has expired")
+	ErrPasswordChangeInvalidNonce      = errors.New("invalid nonce for password change")
+	ErrPasswordReused                  = errors.New("new password must be different from recent passwords")
+	ErrPasswordChangeCancelled         = errors.New("password change request was cancelled")
+	ErrPasswordChangeNotFound          = errors.New("password change request not found")
+	ErrPasswordChangeUnauthorized      = errors.New("unauthorized to access password change request")
+	ErrPasswordChangeInvalidOTP        = errors.New("invalid OTP for password change")
+	ErrPasswordChangeOTPExpired        = errors.New("OTP for password change has expired")
+	ErrPasswordChangeOTPMaxAttempts    = errors.New("maximum OTP attempts exceeded for password change")
+	ErrPasswordChangeFailed            = errors.New("password change operation failed")
+	ErrPasswordStrengthInsufficient    = errors.New("password does not meet strength requirements")
+	ErrPasswordCommonlyUsed            = errors.New("password is commonly used and not allowed")
+	ErrPasswordContainsUserInfo        = errors.New("password cannot contain user information")
+	ErrCurrentPasswordIncorrect        = errors.New("current password is incorrect")
+	ErrPasswordSameAsCurrent           = errors.New("new password cannot be the same as current password")
+)
+
+// Forgot password errors
+var (
+	ErrForgotPasswordRateLimitExceeded = errors.New("forgot password rate limit exceeded")
+	ErrForgotPasswordExpired           = errors.New("forgot password request has expired")
+	ErrForgotPasswordInvalidNonce      = errors.New("invalid nonce for forgot password")
+	ErrForgotPasswordNotFound          = errors.New("forgot password request not found")
+	ErrForgotPasswordInvalidOTP        = errors.New("invalid OTP for forgot password")
+	ErrForgotPasswordOTPExpired        = errors.New("OTP for forgot password has expired")
+	ErrForgotPasswordOTPMaxAttempts    = errors.New("maximum OTP attempts exceeded for forgot password")
+	ErrForgotPasswordFailed            = errors.New("forgot password operation failed")
+	ErrEmailPhoneMismatch              = errors.New("email and phone combination not found")
 )

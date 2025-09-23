@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/you/authzsvc/domain"
 )
 
 // TestManualAuthenticationFlowWithDatabaseValidation runs a step-by-step authentication flow
@@ -28,7 +29,7 @@ func TestManualAuthenticationFlowWithDatabaseValidation(t *testing.T) {
 
 	// Test user data
 	testEmail := fmt.Sprintf("manual.test.%d@e2etest.local", time.Now().UnixNano())
-	testPhone := "+1234567890"
+	testPhone := fmt.Sprintf("+1234%06d", time.Now().UnixNano()%1000000) // Unique phone per test
 	testPassword := "TestPassword123!"
 	
 	// Variables to share between test steps
@@ -100,6 +101,11 @@ func TestManualAuthenticationFlowWithDatabaseValidation(t *testing.T) {
 		t.Logf("   - Phone: %v", user["phone"])
 		t.Logf("   - Phone Verified: %v", user["phone_verified"])
 		t.Logf("   - Is Active: %v", user["is_active"])
+
+		// CB-183: Validate audit logging for registration
+		userID = user["id"].(int)
+		checkAuditEventsExist(t, suite, "user_registration_success", userID, 1)
+		t.Logf("✅ Registration audit event validated")
 	})
 
 	// Step 3: Check OTP in Redis
@@ -203,6 +209,10 @@ func TestManualAuthenticationFlowWithDatabaseValidation(t *testing.T) {
 		sessionExists := checkSessionInRedis(t, suite, accessToken)
 		assert.True(t, sessionExists, "Session should be created in Redis")
 		t.Logf("✅ Session created in Redis")
+
+		// CB-183: Validate audit logging for successful login
+		checkAuditEventsExist(t, suite, string(domain.EventTypeLoginSuccess), userID, 1)
+		t.Logf("✅ Login success audit event validated")
 	})
 
 	// Step 6: Access Protected Endpoint
@@ -321,7 +331,93 @@ func TestManualAuthenticationFlowWithDatabaseValidation(t *testing.T) {
 		t.Logf("   - Updated At: %v", user["updated_at"])
 	})
 
-	t.Logf("🎉 Complete authentication flow test completed successfully!")
+	// Step 10: Comprehensive Audit Trail Validation (CB-183)
+	t.Run("Step 10: Audit Trail Validation", func(t *testing.T) {
+		t.Logf("🔍 Validating complete audit trail...")
+
+		// Debug: Check all tables in database
+		var tables []string
+		suite.DB.Raw("SELECT table_name FROM information_schema.tables WHERE table_schema = 'auth'").Scan(&tables)
+		t.Logf("🔧 Debug: Tables in auth schema: %v", tables)
+
+		// Debug: Check if audit events table exists and count all rows
+		var totalAuditEvents int64
+		suite.DB.Model(&domain.ComprehensiveAuditEvent{}).Count(&totalAuditEvents)
+		t.Logf("🔧 Debug: Total audit events in database: %d", totalAuditEvents)
+		
+		// Debug: Show all audit events in database
+		var allEvents []struct {
+			ID        uint   `json:"id"`
+			EventType string `json:"event_type"`
+			UserID    *uint  `json:"user_id"`
+			Success   bool   `json:"success"`
+			Action    string `json:"action"`
+		}
+		err = suite.DB.Model(&domain.ComprehensiveAuditEvent{}).
+			Select("id, event_type, user_id, success, action").
+			Find(&allEvents).Error
+		require.NoError(t, err)
+		
+		t.Logf("🔧 Debug: All audit events in database:")
+		for _, event := range allEvents {
+			userIDStr := "nil"
+			if event.UserID != nil {
+				userIDStr = fmt.Sprintf("%d", *event.UserID)
+			}
+			t.Logf("    - ID: %d, Type: %s, UserID: %s, Success: %t, Action: %s", 
+				event.ID, event.EventType, userIDStr, event.Success, event.Action)
+		}
+
+		// Get all audit events for this user
+		auditEvents := getAuditEventsForUser(t, suite, userID)
+		t.Logf("📊 Total audit events for user %d: %d", userID, len(auditEvents))
+
+		// Validate we have the expected events
+		expectedEvents := map[string]int{
+			"user_registration_success":           1,
+			string(domain.EventTypeLoginSuccess): 1,
+		}
+
+		eventCounts := make(map[string]int)
+		for _, event := range auditEvents {
+			eventCounts[event.EventType]++
+			t.Logf("   - %s: %s (success: %v) at %v", 
+				event.EventType, event.Action, event.Success, event.Timestamp)
+		}
+
+		// Verify event counts
+		for expectedType, expectedCount := range expectedEvents {
+			actualCount := eventCounts[expectedType]
+			assert.GreaterOrEqual(t, actualCount, expectedCount, 
+				"Expected at least %d events of type %s, got %d", 
+				expectedCount, expectedType, actualCount)
+		}
+
+		// Validate audit event structure and metadata
+		if len(auditEvents) > 0 {
+			firstEvent := auditEvents[0]
+			assert.NotEmpty(t, firstEvent.ID, "Audit event should have ID")
+			assert.NotEmpty(t, firstEvent.EventType, "Audit event should have event type")
+			assert.NotEmpty(t, firstEvent.EventCategory, "Audit event should have category")
+			assert.NotNil(t, firstEvent.UserID, "Audit event should have user ID")
+			assert.Equal(t, uint(userID), *firstEvent.UserID, "Audit event should have correct user ID")
+			assert.NotZero(t, firstEvent.Timestamp, "Audit event should have timestamp")
+			assert.NotNil(t, firstEvent.Metadata, "Audit event should have metadata")
+			t.Logf("✅ Audit event structure validated")
+		}
+
+		// Performance validation - audit events should be created quickly
+		for _, event := range auditEvents {
+			// All events should be within the test timeframe
+			assert.True(t, event.Timestamp.After(suite.StartTime.Add(-1*time.Minute)), 
+				"Audit event timestamp should be recent")
+		}
+		t.Logf("✅ Audit event timing validated")
+
+		t.Logf("✅ Complete audit trail validation successful!")
+	})
+
+	t.Logf("🎉 Complete authentication flow test with audit logging completed successfully!")
 }
 
 // Helper functions for database validation
@@ -483,4 +579,70 @@ func getOTPFromRedisWithUserID(t *testing.T, suite *TestSuite, phone string, use
 	
 	// OTP is stored directly as string, not JSON
 	return val
+}
+
+// Audit logging validation helper functions for CB-183
+
+func checkAuditEventsExist(t *testing.T, suite *TestSuite, eventType string, userID int, minCount int) {
+	t.Helper()
+	
+	var count int64
+	err := suite.DB.Model(&domain.ComprehensiveAuditEvent{}).
+		Where("event_type = ? AND user_id = ?", eventType, userID).
+		Count(&count).Error
+	require.NoError(t, err)
+	
+	assert.GreaterOrEqual(t, int(count), minCount, 
+		"Expected at least %d audit events of type %s for user %d, got %d", 
+		minCount, eventType, userID, count)
+}
+
+func getAuditEventsForUser(t *testing.T, suite *TestSuite, userID int) []domain.ComprehensiveAuditEvent {
+	t.Helper()
+	
+	var events []domain.ComprehensiveAuditEvent
+	err := suite.DB.Where("user_id = ?", userID).
+		Order("timestamp ASC").
+		Find(&events).Error
+	require.NoError(t, err)
+	
+	return events
+}
+
+func validateRegistrationAuditEvent(t *testing.T, event domain.ComprehensiveAuditEvent, userID int, email string) {
+	t.Helper()
+	
+	assert.Equal(t, "user_registration_success", event.EventType)
+	assert.Equal(t, domain.CategorySystem, event.EventCategory)
+	assert.Equal(t, uint(userID), *event.UserID)
+	assert.True(t, event.Success)
+	assert.Contains(t, event.Action, "register")
+	assert.NotNil(t, event.Metadata)
+}
+
+func validateLoginAuditEvent(t *testing.T, event domain.ComprehensiveAuditEvent, userID int, email string, shouldSucceed bool) {
+	t.Helper()
+	
+	if shouldSucceed {
+		assert.Equal(t, domain.EventTypeLoginSuccess, event.EventType)
+	} else {
+		assert.Equal(t, domain.EventTypeLoginFailure, event.EventType)
+	}
+	assert.Equal(t, domain.CategoryAuthentication, event.EventCategory)
+	assert.Equal(t, uint(userID), *event.UserID)
+	assert.Equal(t, shouldSucceed, event.Success)
+	assert.Contains(t, event.Action, "login")
+	assert.NotNil(t, event.Metadata)
+}
+
+func countAuditEventsByType(t *testing.T, suite *TestSuite, eventType string) int {
+	t.Helper()
+	
+	var count int64
+	err := suite.DB.Model(&domain.ComprehensiveAuditEvent{}).
+		Where("event_type = ?", eventType).
+		Count(&count).Error
+	require.NoError(t, err)
+	
+	return int(count)
 }

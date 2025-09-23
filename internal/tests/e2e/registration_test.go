@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/you/authzsvc/domain"
+	"github.com/you/authzsvc/internal/infrastructure/repositories"
 )
 
 // TestRegistrationFlow tests the complete user registration flow E2E
@@ -31,16 +32,16 @@ func TestRegistrationFlow(t *testing.T) {
 	// Database helper for assertions will be created per test as needed
 
 	tests := []struct {
-		name               string
-		email              string
-		phone              string
-		password           string
-		expectedStatus     int
-		expectUserCreated  bool
-		expectOTPSent      bool
-		expectedError      string
-		validateDB         func(t *testing.T, email string)
-		validateRedis      func(t *testing.T, phone string, userID int)
+		name              string
+		email             string
+		phone             string
+		password          string
+		expectedStatus    int
+		expectUserCreated bool
+		expectOTPSent     bool
+		expectedError     string
+		validateDB        func(t *testing.T, email string)
+		validateRedis     func(t *testing.T, phone string, userID int)
 	}{
 		{
 			name:              "successful registration creates user and sends OTP",
@@ -69,11 +70,11 @@ func TestRegistrationFlow(t *testing.T) {
 				// Verify OTP stored in Redis with correct key format
 				ctx := context.Background()
 				otpKey := fmt.Sprintf("otp:%s:%d", phone, userID)
-				
+
 				val, err := suite.Redis.Get(ctx, otpKey).Result()
 				require.NoError(t, err, "OTP should be stored in Redis")
 				assert.NotEmpty(t, val, "OTP value should not be empty")
-				
+
 				// Check TTL is set
 				ttl, err := suite.Redis.TTL(ctx, otpKey).Result()
 				require.NoError(t, err, "OTP should have TTL")
@@ -124,12 +125,12 @@ func TestRegistrationFlow(t *testing.T) {
 			expectedError:  "validation error",
 		},
 		{
-			name:           "invalid phone format accepted by backend",
-			email:          generateTestEmail(),
-			phone:          fmt.Sprintf("123_%d", time.Now().UnixNano()%1000000),
-			password:       "ValidPassword123!",
-			expectedStatus: http.StatusCreated, // Backend accepts any phone format
-			expectedError:  "",
+			name:              "invalid phone format accepted by backend",
+			email:             generateTestEmail(),
+			phone:             fmt.Sprintf("123_%d", time.Now().UnixNano()%1000000),
+			password:          "ValidPassword123!",
+			expectedStatus:    http.StatusCreated, // Backend accepts any phone format
+			expectedError:     "",
 			expectUserCreated: true,
 			expectOTPSent:     true,
 			validateDB: func(t *testing.T, email string) {
@@ -152,6 +153,10 @@ func TestRegistrationFlow(t *testing.T) {
 				opts := DefaultTestUser()
 				opts.Email = tt.email
 				opts.Phone = "+15550000000" // Different phone
+
+				// Clean up any existing users with this email/phone first
+				suite.DB.Unscoped().Where("email = ? OR phone = ?", tt.email, opts.Phone).Delete(&repositories.DBUser{})
+
 				userFactory.CreateUserT(opts)
 			}
 
@@ -175,7 +180,7 @@ func TestRegistrationFlow(t *testing.T) {
 			duration := time.Since(start)
 
 			// Validate performance: registration should complete in < 150ms
-			assert.Less(t, duration, 150*time.Millisecond, 
+			assert.Less(t, duration, 150*time.Millisecond,
 				"Registration endpoint should respond in < 150ms, took %v", duration)
 
 			// Log error responses for debugging
@@ -187,7 +192,7 @@ func TestRegistrationFlow(t *testing.T) {
 			}
 
 			// Validate response status
-			assert.Equal(t, tt.expectedStatus, resp.StatusCode, 
+			assert.Equal(t, tt.expectedStatus, resp.StatusCode,
 				"Expected status %d, got %d", tt.expectedStatus, resp.StatusCode)
 
 			// Parse response
@@ -225,10 +230,10 @@ func TestRegistrationFlow(t *testing.T) {
 					require.True(t, ok, "Error should be string")
 					// For validation errors, check if the error message contains "Field validation" instead
 					if tt.expectedError == "validation error" {
-						assert.Contains(t, errorStr, "Field validation", 
+						assert.Contains(t, errorStr, "Field validation",
 							"Error message should contain field validation error")
 					} else {
-						assert.Contains(t, errorStr, tt.expectedError, 
+						assert.Contains(t, errorStr, tt.expectedError,
 							"Error message should contain: %s", tt.expectedError)
 					}
 				}
@@ -332,7 +337,7 @@ func TestRegistrationPerformance(t *testing.T) {
 			go func(index int) {
 				email := fmt.Sprintf("perf.test.%d.%s", index, generateTestEmail())
 				phone := generateTestPhone() // Use unique phone generation
-				
+
 				reqBody := map[string]string{
 					"email":    email,
 					"phone":    phone,
@@ -376,7 +381,7 @@ func TestRegistrationPerformance(t *testing.T) {
 
 		// Validate performance
 		assert.Zero(t, errorCount, "No registration errors expected under normal load")
-		
+
 		// Only calculate performance metrics if we have successful registrations
 		if len(durations) > 0 {
 			var totalDuration time.Duration
@@ -389,11 +394,11 @@ func TestRegistrationPerformance(t *testing.T) {
 			}
 
 			avgDuration := totalDuration / time.Duration(len(durations))
-			
+
 			// Performance assertions
-			assert.Less(t, avgDuration, 100*time.Millisecond, 
+			assert.Less(t, avgDuration, 100*time.Millisecond,
 				"Average registration time should be < 100ms, got %v", avgDuration)
-			assert.Less(t, maxDuration, 200*time.Millisecond, 
+			assert.Less(t, maxDuration, 200*time.Millisecond,
 				"Max registration time should be < 200ms, got %v", maxDuration)
 
 			t.Logf("Performance Results: %d registrations", len(durations))
@@ -426,7 +431,7 @@ func TestRegistrationRedisIntegration(t *testing.T) {
 	t.Run("registration stores OTP with correct Redis key format", func(t *testing.T) {
 		email := generateTestEmail()
 		phone := generateTestPhone()
-		
+
 		reqBody := map[string]string{
 			"email":    email,
 			"phone":    phone,
@@ -446,12 +451,12 @@ func TestRegistrationRedisIntegration(t *testing.T) {
 			resp.Body.Close()
 		}
 		require.Equal(t, http.StatusCreated, resp.StatusCode)
-		
+
 		// Parse response to get user ID
 		var respBody map[string]interface{}
 		json.NewDecoder(resp.Body).Decode(&respBody)
 		resp.Body.Close()
-		
+
 		data := respBody["data"].(map[string]interface{})
 		userID := int(data["user_id"].(float64))
 
