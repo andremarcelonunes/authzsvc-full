@@ -47,9 +47,13 @@ func (m *MockAuditRepository) Create(ctx context.Context, event *domain.Comprehe
 	if m.CreateFunc != nil {
 		return m.CreateFunc(ctx, event)
 	}
-	// Default behavior: success, assign ID
+	// Default behavior: success, assign ID and set correlation ID like real repository
 	if event.ID == 0 {
 		event.ID = 1
+	}
+	// Set correlation ID if not already set (mimics real repository behavior)
+	if event.CorrelationID == uuid.Nil {
+		event.SetCorrelationID()
 	}
 	return nil
 }
