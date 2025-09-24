@@ -5,14 +5,15 @@ import "time"
 // User represents a user in the system
 type User struct {
 	ID            uint
-	Email         string `gorm:"uniqueIndex"`
-	Phone         string `gorm:"uniqueIndex"`
-	PasswordHash  string `gorm:"column:password"`
+	Email         string     `gorm:"uniqueIndex"`
+	Phone         string     `gorm:"uniqueIndex"`
+	PasswordHash  string     `gorm:"column:password"`
 	Role          string
 	IsActive      bool
 	PhoneVerified bool
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	DeletedAt     *time.Time `gorm:"index"` // Soft delete support for LGPD
 }
 
 // AuthRequest represents authentication credentials

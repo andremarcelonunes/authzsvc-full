@@ -286,12 +286,19 @@ func TestMemoryUsageUnderLoad(t *testing.T) {
 	var m2 runtime.MemStats
 	runtime.ReadMemStats(&m2)
 
-	// Calculate memory usage
-	allocatedMemory := m2.Alloc - m1.Alloc
-	totalAllocations := m2.TotalAlloc - m1.TotalAlloc
+	// Calculate memory usage (handle potential underflow)
+	var allocatedMemory int64
+	if m2.Alloc >= m1.Alloc {
+		allocatedMemory = int64(m2.Alloc - m1.Alloc)
+	} else {
+		// Memory decreased due to GC, this is actually good
+		allocatedMemory = -int64(m1.Alloc - m2.Alloc)
+	}
+	
+	totalAllocations := int64(m2.TotalAlloc - m1.TotalAlloc) // TotalAlloc is monotonic, safe
 
-	// Memory usage assertions
-	maxMemoryIncrease := uint64(50 * 1024 * 1024) // 50MB
+	// Memory usage assertions (only check if memory actually increased)
+	maxMemoryIncrease := int64(50 * 1024 * 1024) // 50MB
 	if allocatedMemory > maxMemoryIncrease {
 		t.Errorf("memory usage increased too much: %d bytes (max: %d bytes)", allocatedMemory, maxMemoryIncrease)
 	}
@@ -299,7 +306,7 @@ func TestMemoryUsageUnderLoad(t *testing.T) {
 	// Report memory metrics
 	t.Logf("Memory usage analysis:")
 	t.Logf("  Iterations: %d", iterations)
-	t.Logf("  Memory increase: %d bytes (%.2f MB)", allocatedMemory, float64(allocatedMemory)/(1024*1024))
+	t.Logf("  Memory change: %d bytes (%.2f MB)", allocatedMemory, float64(allocatedMemory)/(1024*1024))
 	t.Logf("  Total allocations: %d bytes (%.2f MB)", totalAllocations, float64(totalAllocations)/(1024*1024))
 	t.Logf("  Avg per request: %.2f bytes", float64(totalAllocations)/float64(iterations))
 	t.Logf("  GC runs: %d", m2.NumGC-m1.NumGC)

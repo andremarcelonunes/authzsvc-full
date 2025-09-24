@@ -47,6 +47,27 @@ func AutoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate validation_rules table: %w", err)
 	}
 
+	// LGPD User Deletion: Migrate deletion-related tables
+	if err := db.AutoMigrate(&domain.DeletionRequest{}); err != nil {
+		return fmt.Errorf("failed to migrate deletion_requests table: %w", err)
+	}
+
+	if err := db.AutoMigrate(&domain.UserDataExport{}); err != nil {
+		return fmt.Errorf("failed to migrate user_data_exports table: %w", err)
+	}
+
+	if err := db.AutoMigrate(&domain.DeletionAuditLog{}); err != nil {
+		return fmt.Errorf("failed to migrate deletion_audit_logs table: %w", err)
+	}
+
+	if err := db.AutoMigrate(&domain.DataRetentionPolicy{}); err != nil {
+		return fmt.Errorf("failed to migrate data_retention_policies table: %w", err)
+	}
+
+	if err := db.AutoMigrate(&domain.AnonymizedUser{}); err != nil {
+		return fmt.Errorf("failed to migrate anonymized_users table: %w", err)
+	}
+
 	// Initialize Casbin GORM adapter tables
 	// This will create the casbin_rules table if it doesn't exist
 	adapter, err := gormadapter.NewAdapterByDB(db)

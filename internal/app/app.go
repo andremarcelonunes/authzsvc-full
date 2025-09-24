@@ -84,6 +84,40 @@ func Run(cfg *config.Config) error {
 		passwordChangeConfig,
 	)
 
+	// LGPD User Deletion: Initialize deletion system
+	log.Println("LGPD: Initializing user deletion system...")
+	
+	// Initialize deletion repositories
+	deletionRequestRepo := repositories.NewDeletionRequestRepository(gdb)
+	dataExportRepo := repositories.NewDataExportRepository(gdb)
+	deletionAuditRepo := repositories.NewDeletionAuditRepository(gdb)
+	extendedUserRepo := repositories.NewExtendedUserRepository(gdb)
+	
+	// Initialize cascade deletion service
+	cascadeDeletionSvc := services.NewCascadeDeletionService(
+		sessionRepo,
+		auditRepo,
+		passwordChangeRepo,
+		passwordHistoryRepo,
+		forgotPasswordRepo,
+	)
+	
+	// Initialize LGPD compliance checker
+	lgpdComplianceChecker := services.NewLGPDComplianceService(userRepo)
+	
+	// Initialize user deletion service
+	userDeletionSvc := services.NewUserDeletionService(
+		extendedUserRepo,
+		deletionRequestRepo,
+		dataExportRepo,
+		deletionAuditRepo,
+		cascadeDeletionSvc,
+		lgpdComplianceChecker,
+		auditSvc,
+		sessionRepo,
+		services.DefaultUserDeletionConfig(),
+	)
+
 	// CB-182: Initialize validation services
 	log.Println("CB-182: Initializing validation system...")
 
@@ -208,6 +242,7 @@ func Run(cfg *config.Config) error {
 	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E)
 	docsH := handlers.NewSwaggerDocsHandler()
 	passwordChangeH := handlers.NewPasswordChangeHandlers(passwordChangeSvc)
+	userDeletionH := handlers.NewUserDeletionHandlers(userDeletionSvc, authSvc)
 
 	// Initialize middleware
 	jwtMW := middleware.NewAuthMW(tokenSvc, sessionRepo)
@@ -222,8 +257,8 @@ func Run(cfg *config.Config) error {
 		casbinMW = middleware.NewCasbinMW(cas.E, cfg.OwnershipRules)
 	}
 
-	// Build router with CB-182 validation middleware
-	r := httpx.BuildRouterWithValidation(authH, polH, externalAuthzH, docsH, passwordChangeH, jwtMW, casbinMW, validationMW)
+	// Build router with CB-182 validation middleware and LGPD deletion handlers
+	r := httpx.BuildRouterWithDeletion(authH, polH, externalAuthzH, docsH, passwordChangeH, userDeletionH, jwtMW, casbinMW, validationMW)
 
 	// ===== ENSURE STANDARD POLICIES EXIST =====
 	// Instead of checking if ANY policies exist, ensure SPECIFIC policies exist
@@ -245,9 +280,20 @@ func Run(cfg *config.Config) error {
 		{"role_user", "/password/reset", "POST", "*"},
 		{"role_user", "/password/reset/*", "PUT", "*"},
 
+		// LGPD User Deletion permissions for authenticated users (Article 18 rights)
+		{"role_user", "/users/me/deletion", "POST", "*"},           // Right to deletion
+		{"role_user", "/users/me/deletion/*", "GET", "*"},          // Check deletion status
+		{"role_user", "/users/me/deletion/*", "DELETE", "*"},       // Cancel deletion
+		{"role_user", "/users/me/export", "POST", "*"},             // Right to data portability
+		{"role_user", "/users/me/deletion/history", "GET", "*"},    // View deletion history
+
 		// Admin permissions
 		{"role_admin", "/admin/*", "(GET|POST|PUT|DELETE)", "*"},
 		{"role_admin", "/auth/*", "(GET|POST|PUT|DELETE)", "*"},
+		
+		// Admin LGPD deletion management permissions
+		{"role_admin", "/admin/users/deletion/*/process", "POST", "*"},     // Process deletion requests
+		{"role_admin", "/admin/users/deletion/pending", "GET", "*"},        // List pending deletions
 
 		// Other roles from policies.csv
 		{"role_attendant", "/auth/me", "GET", "*"},

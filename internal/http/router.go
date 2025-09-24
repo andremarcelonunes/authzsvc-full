@@ -7,15 +7,20 @@ import (
 )
 
 func BuildRouter(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, pch *handlers.PasswordChangeHandlers, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware) *gin.Engine {
-	return buildRouterInternal(ah, ph, eh, dh, pch, jwtmw, cb, nil)
+	return buildRouterInternal(ah, ph, eh, dh, pch, nil, jwtmw, cb, nil)
 }
 
 // BuildRouterWithValidation builds router with CB-182 validation middleware
 func BuildRouterWithValidation(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, pch *handlers.PasswordChangeHandlers, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware, validationMW *middleware.ValidationMiddleware) *gin.Engine {
-	return buildRouterInternal(ah, ph, eh, dh, pch, jwtmw, cb, validationMW)
+	return buildRouterInternal(ah, ph, eh, dh, pch, nil, jwtmw, cb, validationMW)
 }
 
-func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, pch *handlers.PasswordChangeHandlers, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware, validationMW *middleware.ValidationMiddleware) *gin.Engine {
+// BuildRouterWithDeletion builds router with LGPD deletion handlers
+func BuildRouterWithDeletion(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, pch *handlers.PasswordChangeHandlers, delh *handlers.UserDeletionHandlers, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware, validationMW *middleware.ValidationMiddleware) *gin.Engine {
+	return buildRouterInternal(ah, ph, eh, dh, pch, delh, jwtmw, cb, validationMW)
+}
+
+func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, pch *handlers.PasswordChangeHandlers, delh *handlers.UserDeletionHandlers, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware, validationMW *middleware.ValidationMiddleware) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
@@ -87,6 +92,18 @@ func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers,
 		passwordPublic.PUT("/reset/:id/complete", pch.CompleteForgotPassword)
 	}
 
+	// LGPD User Deletion endpoints (authenticated users only)
+	if delh != nil {
+		users := v.Group("/users")
+		
+		// User self-deletion endpoints (LGPD Article 18)
+		users.POST("/me/deletion", delh.RequestDeletion)           // Request deletion
+		users.GET("/me/deletion/:id", delh.GetDeletionStatus)      // Check deletion status  
+		users.DELETE("/me/deletion/:id", delh.CancelDeletion)      // Cancel deletion
+		users.POST("/me/export", delh.ExportUserData)              // Export user data (LGPD portability)
+		users.GET("/me/deletion/history", delh.GetDeletionHistory) // Deletion audit history
+	}
+
 	// Admin endpoints with JWT, Casbin, and optionally validation
 	adm := r.Group("/admin")
 	if validationMW != nil {
@@ -96,6 +113,13 @@ func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers,
 	adm.GET("/policies", ph.List)
 	adm.POST("/policies", ph.Add)
 	adm.DELETE("/policies", ph.Remove)
+
+	// Admin LGPD deletion management endpoints
+	if delh != nil {
+		adminUsers := adm.Group("/users")
+		adminUsers.POST("/deletion/:id/process", delh.AdminProcessDeletion)    // Manually process deletion
+		adminUsers.GET("/deletion/pending", delh.AdminListPendingDeletions)    // List pending deletions
+	}
 
 	return r
 }
