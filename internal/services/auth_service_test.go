@@ -58,9 +58,13 @@ func TestAuthServiceImpl_Register(t *testing.T) {
 			phone:    "+1234567890",
 			password: "password123",
 			setupMocks: func(userRepo *mocks.MockUserRepository, passwordSvc *mocks.MockPasswordService, otpSvc *mocks.MockOTPService) {
-				// User already exists
-				userRepo.FindByEmailFunc = func(ctx context.Context, email string) (*domain.User, error) {
-					return createValidUser(t), nil
+				// Password hashing succeeds
+				passwordSvc.HashFunc = func(password string) (string, error) {
+					return "hashed_" + password, nil
+				}
+				// User creation fails due to unique constraint violation (duplicate user)
+				userRepo.CreateFunc = func(ctx context.Context, user *domain.User) error {
+					return errors.New("duplicate key value violates unique constraint \"users_email_key\"")
 				}
 			},
 			expectedError: domain.ErrUserAlreadyExists,

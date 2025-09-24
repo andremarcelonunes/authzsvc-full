@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -95,7 +97,7 @@ func createValidSession(t *testing.T, userID uint) *domain.Session {
 	t.Helper()
 
 	return &domain.Session{
-		ID:        "sess_123_456789",
+		ID:        generateUniqueSessionID(t),
 		UserID:    userID,
 		ExpiresAt: time.Now().Add(7 * 24 * time.Hour), // Expires in 7 days
 		CreatedAt: time.Now(),
@@ -397,4 +399,10 @@ func createFailedValidationMock(t *testing.T, errorMessage string) *mocks.MockRe
 	}
 	
 	return validationSvc
+}
+
+// generateUniqueSessionID creates a unique session ID for each test
+func generateUniqueSessionID(t *testing.T) string {
+	t.Helper()
+	return fmt.Sprintf("sess_%d_%d", time.Now().UnixNano(), rand.Int63())
 }

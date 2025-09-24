@@ -201,7 +201,12 @@ func (m *MockExtendedUserRepository) IsDeleted(ctx context.Context, userID uint)
 func (m *MockExtendedUserRepository) FindUsersForDeletion(ctx context.Context, beforeDate time.Time) ([]*domain.User, error) { return nil, nil }
 
 type MockDeletionRequestRepository struct {
-	CreateFunc func(ctx context.Context, request *domain.DeletionRequest) error
+	CreateFunc        func(ctx context.Context, request *domain.DeletionRequest) error
+	CreateExportFunc  func(ctx context.Context, export *domain.UserDataExport) error
+	GetExportByIDFunc func(ctx context.Context, id string) (*domain.UserDataExport, error)
+	SearchExportsFunc func(ctx context.Context, criteria domain.ExportSearchCriteria) ([]*domain.UserDataExport, error)
+	UpdateExportFunc  func(ctx context.Context, export *domain.UserDataExport) error
+	SearchFunc        func(ctx context.Context, criteria domain.DeletionSearchCriteria) ([]*domain.DeletionRequest, error)
 }
 
 func (m *MockDeletionRequestRepository) Create(ctx context.Context, request *domain.DeletionRequest) error {
@@ -209,6 +214,41 @@ func (m *MockDeletionRequestRepository) Create(ctx context.Context, request *dom
 		return m.CreateFunc(ctx, request)
 	}
 	return nil
+}
+
+func (m *MockDeletionRequestRepository) CreateExport(ctx context.Context, export *domain.UserDataExport) error {
+	if m.CreateExportFunc != nil {
+		return m.CreateExportFunc(ctx, export)
+	}
+	return nil
+}
+
+func (m *MockDeletionRequestRepository) GetExportByID(ctx context.Context, id string) (*domain.UserDataExport, error) {
+	if m.GetExportByIDFunc != nil {
+		return m.GetExportByIDFunc(ctx, id)
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *MockDeletionRequestRepository) SearchExports(ctx context.Context, criteria domain.ExportSearchCriteria) ([]*domain.UserDataExport, error) {
+	if m.SearchExportsFunc != nil {
+		return m.SearchExportsFunc(ctx, criteria)
+	}
+	return []*domain.UserDataExport{}, nil
+}
+
+func (m *MockDeletionRequestRepository) UpdateExport(ctx context.Context, export *domain.UserDataExport) error {
+	if m.UpdateExportFunc != nil {
+		return m.UpdateExportFunc(ctx, export)
+	}
+	return nil
+}
+
+func (m *MockDeletionRequestRepository) Search(ctx context.Context, criteria domain.DeletionSearchCriteria) ([]*domain.DeletionRequest, error) {
+	if m.SearchFunc != nil {
+		return m.SearchFunc(ctx, criteria)
+	}
+	return []*domain.DeletionRequest{}, nil
 }
 
 func (m *MockDeletionRequestRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.DeletionRequest, error) { return nil, domain.ErrNotFound }

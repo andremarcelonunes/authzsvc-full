@@ -51,10 +51,11 @@ func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers,
 
 	// Protected endpoints with JWT and Casbin, optionally with validation
 	v := r.Group("/")
+	v.Use(jwtmw.WithJWT()) // JWT middleware sets user context first
 	if validationMW != nil {
-		v.Use(validationMW.ValidateRequest())
+		v.Use(validationMW.ValidateRequest()) // Validation can now access user context
 	}
-	v.Use(jwtmw.WithJWT(), cb.Enforce())
+	v.Use(cb.Enforce()) // Casbin enforcement last
 	v.GET("/auth/me", ah.Me)
 	v.POST("/auth/logout", ah.Logout)
 	v.GET("/users/:id", func(c *gin.Context) {

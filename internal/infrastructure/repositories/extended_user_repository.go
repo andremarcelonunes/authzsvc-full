@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/you/authzsvc/domain"
@@ -59,30 +60,56 @@ func (r *ExtendedUserRepository) HardDelete(ctx context.Context, userID uint) er
 	return nil
 }
 
-// Anonymize replaces user data with anonymous data
+// Anonymize replaces user data with anonymous data and creates audit trail
 func (r *ExtendedUserRepository) Anonymize(ctx context.Context, userID uint, anonymousData *domain.AnonymizedUser) error {
-	// Update user record with anonymous data
-	result := r.db.WithContext(ctx).
-		Model(&domain.User{}).
-		Where("id = ?", userID).
-		Updates(map[string]any{
-			"email":      anonymousData.Email,
-			"phone":      anonymousData.Phone,
-			"deleted_at": anonymousData.AnonymizedAt,
-		})
-	
-	if result.Error != nil {
-		return result.Error
-	}
-	
-	if result.RowsAffected == 0 {
-		return domain.ErrUserNotFound
-	}
-	
-	// In a full implementation, you would also create an entry in the anonymized_users table
-	// For now, we'll just update the existing user record
-	
-	return nil
+	// Use transaction to ensure consistency
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// First, get the original user data before anonymization
+		var originalUser domain.User
+		if err := tx.Where("id = ?", userID).First(&originalUser).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return domain.ErrUserNotFound
+			}
+			return err
+		}
+
+		// Create entry in anonymized_users table for audit trail and compliance
+		anonymizedRecord := &domain.AnonymizedUser{
+			ID:                userID, // Keep same ID for reference
+			AnonymousID:       anonymousData.AnonymousID,
+			Email:             anonymousData.Email,
+			Phone:             anonymousData.Phone,
+			Role:              originalUser.Role,                // Retain original role for statistics
+			AccountCreatedAt:  originalUser.CreatedAt,           // Original creation date
+			AnonymizedAt:      anonymousData.AnonymizedAt,
+			RetainedForReason: anonymousData.RetainedForReason,
+			RetainedUntil:     anonymousData.RetainedUntil,
+		}
+
+		// Insert into anonymized_users table
+		if err := tx.Create(anonymizedRecord).Error; err != nil {
+			return fmt.Errorf("failed to create anonymized user record: %w", err)
+		}
+
+		// Update user record with anonymous data
+		result := tx.Model(&domain.User{}).
+			Where("id = ?", userID).
+			Updates(map[string]any{
+				"email":      anonymousData.Email,
+				"phone":      anonymousData.Phone,
+				"deleted_at": anonymousData.AnonymizedAt,
+			})
+
+		if result.Error != nil {
+			return fmt.Errorf("failed to update user with anonymous data: %w", result.Error)
+		}
+
+		if result.RowsAffected == 0 {
+			return domain.ErrUserNotFound
+		}
+
+		return nil
+	})
 }
 
 // Deactivate sets is_active to false for a user

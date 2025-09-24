@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/you/authzsvc/domain"
 	"github.com/you/authzsvc/internal/mocks"
 )
@@ -15,6 +17,18 @@ func TestRefreshTokenConcurrency(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping load test in short mode")
 	}
+
+	// Start miniredis for testing
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	// Create Redis client
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
 
 	// Create mocks
 	userRepo := mocks.NewMockUserRepository()
@@ -30,10 +44,10 @@ func TestRefreshTokenConcurrency(t *testing.T) {
 	// Setup mocks for successful refresh
 	setupSuccessfulRefreshMocks(t, userRepo, sessionRepo, tokenSvc, testUser, testSession)
 
-	// Create service (without Redis and validation for testing)
+	// Create service with Redis for security features
 	requestValidator := mocks.NewMockRequestValidationService()
 	auditService := mocks.NewMockComprehensiveAuditService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator, auditService)
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService)
 
 	// Test concurrent refresh attempts
 	concurrency := 10
@@ -51,6 +65,11 @@ func TestRefreshTokenConcurrency(t *testing.T) {
 				defer wg.Done()
 
 				for j := 0; j < attempts; j++ {
+					// Clear Redis blacklist occasionally to prevent all attempts from failing due to blacklist
+					if j%10 == 0 {
+						mr.FlushAll()
+					}
+					
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					result, err := authService.RefreshToken(ctx, "valid_refresh_token")
 					cancel()
@@ -92,6 +111,18 @@ func TestRefreshTokenPerformance(t *testing.T) {
 		t.Skip("skipping performance test in short mode")
 	}
 
+	// Start miniredis for testing
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	// Create Redis client
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
 	// Create mocks
 	userRepo := mocks.NewMockUserRepository()
 	sessionRepo := mocks.NewMockSessionRepository()
@@ -109,7 +140,7 @@ func TestRefreshTokenPerformance(t *testing.T) {
 	// Create service
 	requestValidator := mocks.NewMockRequestValidationService()
 	auditService := mocks.NewMockComprehensiveAuditService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator, auditService)
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService)
 
 	// Performance test
 	iterations := 1000
@@ -119,6 +150,9 @@ func TestRefreshTokenPerformance(t *testing.T) {
 		start := time.Now()
 
 		for i := 0; i < iterations; i++ {
+			// Clear Redis blacklist for each iteration to test performance without blacklist interference
+			mr.FlushAll()
+			
 			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 			_, err := authService.RefreshToken(ctx, "valid_refresh_token")
 			cancel()
@@ -147,6 +181,18 @@ func TestRefreshTokenMemoryUsage(t *testing.T) {
 		t.Skip("skipping memory test in short mode")
 	}
 
+	// Start miniredis for testing
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	// Create Redis client
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
 	// Create mocks
 	userRepo := mocks.NewMockUserRepository()
 	sessionRepo := mocks.NewMockSessionRepository()
@@ -164,7 +210,7 @@ func TestRefreshTokenMemoryUsage(t *testing.T) {
 	// Create service
 	requestValidator := mocks.NewMockRequestValidationService()
 	auditService := mocks.NewMockComprehensiveAuditService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator, auditService)
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService)
 
 	// Memory usage test
 	iterations := 10000
@@ -172,6 +218,9 @@ func TestRefreshTokenMemoryUsage(t *testing.T) {
 	t.Run("memory_usage_test", func(t *testing.T) {
 		// Run many operations to detect potential memory leaks
 		for i := 0; i < iterations; i++ {
+			// Clear Redis blacklist for each iteration
+			mr.FlushAll()
+			
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			_, err := authService.RefreshToken(ctx, "valid_refresh_token")
 			cancel()
@@ -193,6 +242,18 @@ func TestRefreshTokenMemoryUsage(t *testing.T) {
 
 // BenchmarkRefreshToken benchmarks the refresh token operation
 func BenchmarkRefreshToken(b *testing.B) {
+	// Start miniredis for testing
+	mr, err := miniredis.Run()
+	if err != nil {
+		b.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	// Create Redis client
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
 	// Create mocks
 	userRepo := mocks.NewMockUserRepository()
 	sessionRepo := mocks.NewMockSessionRepository()
@@ -210,7 +271,7 @@ func BenchmarkRefreshToken(b *testing.B) {
 	// Create service
 	requestValidator := mocks.NewMockRequestValidationService()
 	auditService := mocks.NewMockComprehensiveAuditService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, nil, requestValidator, auditService)
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService)
 
 	ctx := context.Background()
 
@@ -218,6 +279,9 @@ func BenchmarkRefreshToken(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
+		// Clear Redis blacklist for each iteration in benchmark
+		mr.FlushAll()
+		
 		_, err := authService.RefreshToken(ctx, "valid_refresh_token")
 		if err != nil {
 			b.Fatalf("unexpected error: %v", err)

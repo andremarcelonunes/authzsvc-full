@@ -2,6 +2,7 @@ package mocks
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,13 @@ type MockDeletionRequestRepository struct {
 	UpdateFunc       func(ctx context.Context, request *domain.DeletionRequest) error
 	ListPendingFunc  func(ctx context.Context, limit int) ([]*domain.DeletionRequest, error)
 	ListScheduledFunc func(ctx context.Context, beforeTime time.Time) ([]*domain.DeletionRequest, error)
+	SearchFunc       func(ctx context.Context, criteria domain.DeletionSearchCriteria) ([]*domain.DeletionRequest, error)
+	
+	// Export methods
+	CreateExportFunc    func(ctx context.Context, export *domain.UserDataExport) error
+	GetExportByIDFunc   func(ctx context.Context, id string) (*domain.UserDataExport, error)
+	SearchExportsFunc   func(ctx context.Context, criteria domain.ExportSearchCriteria) ([]*domain.UserDataExport, error)
+	UpdateExportFunc    func(ctx context.Context, export *domain.UserDataExport) error
 }
 
 // NewMockDeletionRequestRepository creates a new MockDeletionRequestRepository with default behaviors
@@ -73,6 +81,46 @@ func (m *MockDeletionRequestRepository) ListScheduled(ctx context.Context, befor
 		return m.ListScheduledFunc(ctx, beforeTime)
 	}
 	return []*domain.DeletionRequest{}, nil // Default: empty list
+}
+
+// Search searches deletion requests by criteria
+func (m *MockDeletionRequestRepository) Search(ctx context.Context, criteria domain.DeletionSearchCriteria) ([]*domain.DeletionRequest, error) {
+	if m.SearchFunc != nil {
+		return m.SearchFunc(ctx, criteria)
+	}
+	return []*domain.DeletionRequest{}, nil
+}
+
+// CreateExport creates a new data export record
+func (m *MockDeletionRequestRepository) CreateExport(ctx context.Context, export *domain.UserDataExport) error {
+	if m.CreateExportFunc != nil {
+		return m.CreateExportFunc(ctx, export)
+	}
+	return nil
+}
+
+// GetExportByID retrieves an export by ID
+func (m *MockDeletionRequestRepository) GetExportByID(ctx context.Context, id string) (*domain.UserDataExport, error) {
+	if m.GetExportByIDFunc != nil {
+		return m.GetExportByIDFunc(ctx, id)
+	}
+	return nil, fmt.Errorf("export not found")
+}
+
+// SearchExports searches exports by criteria
+func (m *MockDeletionRequestRepository) SearchExports(ctx context.Context, criteria domain.ExportSearchCriteria) ([]*domain.UserDataExport, error) {
+	if m.SearchExportsFunc != nil {
+		return m.SearchExportsFunc(ctx, criteria)
+	}
+	return []*domain.UserDataExport{}, nil
+}
+
+// UpdateExport updates an export record
+func (m *MockDeletionRequestRepository) UpdateExport(ctx context.Context, export *domain.UserDataExport) error {
+	if m.UpdateExportFunc != nil {
+		return m.UpdateExportFunc(ctx, export)
+	}
+	return nil
 }
 
 // Compile-time interface compliance check

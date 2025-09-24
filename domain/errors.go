@@ -68,6 +68,7 @@ var (
 	ErrEncodingViolation    = errors.New("encoding validation failed")
 	ErrContentBlocked       = errors.New("content blocked by security policy")
 	ErrThreatDetected       = errors.New("security threat detected")
+	ErrViolationNotFound    = errors.New("security violation not found")
 )
 
 // Rate limiting errors

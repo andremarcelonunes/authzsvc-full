@@ -6,9 +6,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/you/authzsvc/internal/interfaces"
 )
 
-// MockRedisClient implements a simple mock for Redis operations needed for testing
+// MockRedisClient implements interfaces.RedisClient for testing
 type MockRedisClient struct {
 	SetNXFunc func(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd
 	EvalFunc  func(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd
@@ -21,6 +22,9 @@ type MockRedisClient struct {
 	// Internal storage for mocking
 	storage map[string]interface{}
 }
+
+// Ensure MockRedisClient implements interfaces.RedisClient
+var _ interfaces.RedisClient = (*MockRedisClient)(nil)
 
 // NewMockRedisClient creates a new mock Redis client
 func NewMockRedisClient() *MockRedisClient {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/you/authzsvc/domain"
@@ -673,19 +674,56 @@ func (s *PasswordChangeService) generateAndSendOTP(ctx context.Context, phone st
 	return otpRequest.Code, nil
 }
 
-// Temporary password hash storage (in production, use Redis)
-var tempPasswordHashes = make(map[string]string)
+// Thread-safe temporary password hash storage using sync.Map
+var (
+	tempPasswordHashes = &sync.Map{}
+	tempPasswordTTL    = &sync.Map{}
+)
 
 func (s *PasswordChangeService) storeTemporaryPasswordHash(requestID, hash string) {
-	tempPasswordHashes[requestID] = hash
+	tempPasswordHashes.Store(requestID, hash)
+	// Set TTL for automatic cleanup
+	tempPasswordTTL.Store(requestID, time.Now().Add(30*time.Minute))
+	
+	// Start cleanup goroutine if needed (run once per service instance)
+	go s.cleanupExpiredHashes()
 }
 
 func (s *PasswordChangeService) getTemporaryPasswordHash(requestID string) string {
-	return tempPasswordHashes[requestID]
+	// Check if expired
+	if ttl, exists := tempPasswordTTL.Load(requestID); exists {
+		if time.Now().After(ttl.(time.Time)) {
+			s.deleteTemporaryPasswordHash(requestID)
+			return ""
+		}
+	}
+	
+	if hash, exists := tempPasswordHashes.Load(requestID); exists {
+		return hash.(string)
+	}
+	return ""
 }
 
 func (s *PasswordChangeService) deleteTemporaryPasswordHash(requestID string) {
-	delete(tempPasswordHashes, requestID)
+	tempPasswordHashes.Delete(requestID)
+	tempPasswordTTL.Delete(requestID)
+}
+
+// cleanupExpiredHashes runs periodically to clean up expired hashes
+func (s *PasswordChangeService) cleanupExpiredHashes() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	
+	for range ticker.C {
+		now := time.Now()
+		tempPasswordTTL.Range(func(key, value interface{}) bool {
+			if now.After(value.(time.Time)) {
+				requestID := key.(string)
+				s.deleteTemporaryPasswordHash(requestID)
+			}
+			return true
+		})
+	}
 }
 
 // Password validation helper functions

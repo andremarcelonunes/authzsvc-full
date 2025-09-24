@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -129,7 +130,9 @@ func (vm *ValidationMiddleware) ValidateRequest() gin.HandlerFunc {
 		
 		// Phase 3: Security validation (if enabled)
 		if vm.config.EnableSecurityValidation {
-			securityResult, err := vm.validateSecurity(ctx, requestBody, validationCtx)
+			// Add validation context to the context for security validation
+			ctxWithValidation := context.WithValue(ctx, "validation_context", validationCtx)
+			securityResult, err := vm.validateSecurity(ctxWithValidation, requestBody, validationCtx)
 			if err != nil {
 				vm.handleSecurityViolation(c, err, validationCtx)
 				return
@@ -282,6 +285,12 @@ func (vm *ValidationMiddleware) buildValidationContext(c *gin.Context) *domain.V
 	if userID, exists := c.Get("user_id"); exists {
 		if uid, ok := userID.(uint); ok {
 			ctx.UserID = &uid
+		} else if uidStr, ok := userID.(string); ok {
+			// AuthMiddleware stores user_id as string, convert to uint
+			if uidInt, err := strconv.ParseUint(uidStr, 10, 64); err == nil {
+				uid := uint(uidInt)
+				ctx.UserID = &uid
+			}
 		}
 	}
 	

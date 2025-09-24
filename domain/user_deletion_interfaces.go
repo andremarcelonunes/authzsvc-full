@@ -62,6 +62,13 @@ type DeletionRequestRepository interface {
 	Update(ctx context.Context, request *DeletionRequest) error
 	ListPending(ctx context.Context, limit int) ([]*DeletionRequest, error)
 	ListScheduled(ctx context.Context, beforeTime time.Time) ([]*DeletionRequest, error)
+	Search(ctx context.Context, criteria DeletionSearchCriteria) ([]*DeletionRequest, error)
+	
+	// Export methods
+	CreateExport(ctx context.Context, export *UserDataExport) error
+	GetExportByID(ctx context.Context, id string) (*UserDataExport, error)
+	SearchExports(ctx context.Context, criteria ExportSearchCriteria) ([]*UserDataExport, error)
+	UpdateExport(ctx context.Context, export *UserDataExport) error
 }
 
 // DataExportRepository handles data export records

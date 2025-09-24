@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -74,6 +75,88 @@ func (r *DeletionRequestRepository) ListScheduled(ctx context.Context, beforeTim
 		Order("scheduled_for ASC").
 		Find(&requests).Error
 	return requests, err
+}
+
+// Search searches deletion requests by criteria
+func (r *DeletionRequestRepository) Search(ctx context.Context, criteria domain.DeletionSearchCriteria) ([]*domain.DeletionRequest, error) {
+	var requests []*domain.DeletionRequest
+	query := r.db.WithContext(ctx)
+	
+	if criteria.UserID != nil {
+		query = query.Where("user_id = ?", *criteria.UserID)
+	}
+	if criteria.Status != "" {
+		query = query.Where("status = ?", criteria.Status)
+	}
+	if criteria.ScheduledBefore != nil {
+		query = query.Where("scheduled_for <= ?", *criteria.ScheduledBefore)
+	}
+	if criteria.CreatedAfter != nil {
+		query = query.Where("created_at >= ?", *criteria.CreatedAfter)
+	}
+	
+	if criteria.Limit > 0 {
+		query = query.Limit(criteria.Limit)
+	}
+	if criteria.Offset > 0 {
+		query = query.Offset(criteria.Offset)
+	}
+	
+	err := query.Find(&requests).Error
+	return requests, err
+}
+
+// Export methods
+
+// CreateExport creates a new data export record
+func (r *DeletionRequestRepository) CreateExport(ctx context.Context, export *domain.UserDataExport) error {
+	return r.db.WithContext(ctx).Create(export).Error
+}
+
+// GetExportByID retrieves an export by ID
+func (r *DeletionRequestRepository) GetExportByID(ctx context.Context, id string) (*domain.UserDataExport, error) {
+	exportUUID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid export ID: %w", err)
+	}
+	
+	var export domain.UserDataExport
+	err = r.db.WithContext(ctx).Where("export_id = ?", exportUUID).First(&export).Error
+	if err != nil {
+		return nil, err
+	}
+	return &export, nil
+}
+
+// SearchExports searches exports by criteria
+func (r *DeletionRequestRepository) SearchExports(ctx context.Context, criteria domain.ExportSearchCriteria) ([]*domain.UserDataExport, error) {
+	var exports []*domain.UserDataExport
+	query := r.db.WithContext(ctx)
+	
+	if criteria.UserID != nil {
+		query = query.Where("user_id = ?", *criteria.UserID)
+	}
+	if criteria.ExpiredBefore != nil {
+		query = query.Where("expires_at <= ?", *criteria.ExpiredBefore)
+	}
+	if criteria.CreatedAfter != nil {
+		query = query.Where("created_at >= ?", *criteria.CreatedAfter)
+	}
+	
+	if criteria.Limit > 0 {
+		query = query.Limit(criteria.Limit)
+	}
+	if criteria.Offset > 0 {
+		query = query.Offset(criteria.Offset)
+	}
+	
+	err := query.Find(&exports).Error
+	return exports, err
+}
+
+// UpdateExport updates an export record
+func (r *DeletionRequestRepository) UpdateExport(ctx context.Context, export *domain.UserDataExport) error {
+	return r.db.WithContext(ctx).Save(export).Error
 }
 
 // Compile-time interface compliance check

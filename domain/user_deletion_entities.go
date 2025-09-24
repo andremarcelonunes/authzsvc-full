@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 )
 
 // StringList is a custom type for []string that can be stored in PostgreSQL as JSONB
@@ -55,7 +56,7 @@ type DeletionRequest struct {
 	RetentionUntil    *time.Time             `json:"retention_until"`
 	DataExported      bool                   `json:"data_exported"`
 	DataExportPath    string                 `json:"data_export_path"`
-	AnonymizationLog  AnonymizationDetails   `json:"anonymization_log" gorm:"type:jsonb"`
+	AnonymizationLog  datatypes.JSON         `json:"anonymization_log" gorm:"type:jsonb"`
 	CreatedAt         time.Time              `json:"created_at"`
 	UpdatedAt         time.Time              `json:"updated_at"`
 }
@@ -120,9 +121,29 @@ type DataRetentionPolicy struct {
 	LegalBasis      string        `json:"legal_basis"`
 	Mandatory       bool          `json:"mandatory"`
 	Description     string        `json:"description"`
-	AppliesTo       []string      `json:"applies_to" gorm:"type:jsonb"` // user types, regions, etc.
+	AppliesTo       StringList    `json:"applies_to" gorm:"type:jsonb"` // user types, regions, etc.
 	CreatedAt       time.Time     `json:"created_at"`
 	UpdatedAt       time.Time     `json:"updated_at"`
+}
+
+// ExportSearchCriteria defines search criteria for exports
+type ExportSearchCriteria struct {
+	UserID        *uint
+	Status        *ExportStatus
+	ExpiredBefore *time.Time
+	CreatedAfter  *time.Time
+	Limit         int
+	Offset        int
+}
+
+// DeletionSearchCriteria defines search criteria for deletion requests
+type DeletionSearchCriteria struct {
+	UserID          *uint
+	Status          DeletionRequestStatus
+	ScheduledBefore *time.Time
+	CreatedAfter    *time.Time
+	Limit           int
+	Offset          int
 }
 
 // AnonymizedUser represents a user after anonymization
@@ -152,6 +173,6 @@ type DeletionAuditLog struct {
 	ErrorMessage   string                 `json:"error_message,omitempty"`
 	AffectedTables []string               `json:"affected_tables" gorm:"type:jsonb"`
 	RecordsDeleted map[string]int         `json:"records_deleted" gorm:"type:jsonb"`
-	Metadata       map[string]interface{} `json:"metadata" gorm:"type:jsonb"`
+	Metadata       datatypes.JSON `json:"metadata" gorm:"type:jsonb"`
 	CreatedAt      time.Time              `json:"created_at"`
 }

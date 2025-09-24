@@ -74,7 +74,7 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	
 	user, err := h.authSvc.Register(ctx, req.Email, req.Phone, req.Password, role)
 	if err != nil {
-		if err == domain.ErrUserAlreadyExists {
+		if errors.Is(err, domain.ErrUserAlreadyExists) {
 			c.JSON(http.StatusConflict, gin.H{"error": "User already exists"})
 			return
 		}

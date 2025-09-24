@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/you/authzsvc/internal/config"
 	httpx "github.com/you/authzsvc/internal/http"
@@ -26,6 +28,15 @@ func Run(cfg *config.Config) error {
 	}
 	if err := database.AutoMigrate(gdb); err != nil {
 		return err
+	}
+	
+	// Seed default data retention policies for LGPD compliance
+	retentionSeeder := services.NewRetentionPolicySeeder(gdb)
+	if err := retentionSeeder.SeedDefaultRetentionPolicies(context.Background()); err != nil {
+		log.Printf("Warning: Failed to seed retention policies: %v", err)
+		// Don't fail startup for seeding issues, just log the warning
+	} else {
+		log.Println("LGPD: Default data retention policies initialized")
 	}
 	cas, err := auth.NewCasbinService(gdb, cfg.CasbinModelPath)
 	if err != nil {
@@ -102,10 +113,22 @@ func Run(cfg *config.Config) error {
 		forgotPasswordRepo,
 	)
 	
-	// Initialize LGPD compliance checker
-	lgpdComplianceChecker := services.NewLGPDComplianceService(userRepo)
+	// Initialize LGPD compliance checker with production configuration
+	lgpdConfig := &services.LGPDComplianceConfig{
+		TestingMode: false, // Production mode - enforce all restrictions
+		EnableLegalHoldChecks: true,
+		EnableContractChecks: true,
+		EnableRegulatoryChecks: true,
+		MinimumAccountAge: 24 * time.Hour,
+		CoolingOffPeriod: 24 * time.Hour,
+	}
+	lgpdComplianceChecker := services.NewLGPDComplianceService(userRepo, auditRepo, lgpdConfig)
 	
-	// Initialize user deletion service
+	// Initialize user deletion service with production LGPD-compliant scheduling
+	deletionConfig := services.DefaultUserDeletionConfig()
+	deletionConfig.TestingMode = false // Production mode - enforce LGPD scheduling constraints
+	log.Println("LGPD: Production mode - enforcing standard 30-day grace period and retention policies")
+	
 	userDeletionSvc := services.NewUserDeletionService(
 		extendedUserRepo,
 		deletionRequestRepo,
@@ -115,7 +138,7 @@ func Run(cfg *config.Config) error {
 		lgpdComplianceChecker,
 		auditSvc,
 		sessionRepo,
-		services.DefaultUserDeletionConfig(),
+		deletionConfig,
 	)
 
 	// CB-182: Initialize validation services
@@ -136,8 +159,8 @@ func Run(cfg *config.Config) error {
 	}
 	rateLimitValidationSvc := services.NewRateLimitValidationService(rdb, rateLimitConfig)
 
-	// Initialize mock repositories for CB-182 (in production, use real repositories)
-	securityViolationRepo := validation.NewMockSecurityViolationRepository()
+	// Initialize real security violation repository for CB-182 (replaced mock for database persistence)
+	securityViolationRepo := repositories.NewSecurityViolationRepository(gdb)
 
 	// Initialize security validation service
 	securityConfig := services.SecurityValidationConfig{
@@ -320,7 +343,10 @@ func Run(cfg *config.Config) error {
 		log.Println("casbin: added role inheritance - admin inherits from user")
 	} // Save policies only if something was updated
 	if policyUpdated {
-		_ = cas.E.SavePolicy()
+		if err := cas.E.SavePolicy(); err != nil {
+			log.Printf("CRITICAL: Failed to save Casbin policies: %v", err)
+			return fmt.Errorf("authorization system initialization failed: %w", err)
+		}
 		log.Println("casbin: policies updated and saved")
 	} else {
 		log.Println("casbin: all standard policies already exist")

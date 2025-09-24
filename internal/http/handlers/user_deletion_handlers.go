@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,10 +51,31 @@ type RequestDeletionRequest struct {
 // @Security Bearer
 func (h *UserDeletionHandlers) RequestDeletion(c *gin.Context) {
 	// Get user ID from context (set by auth middleware)
-	userID, exists := c.Get("user_id")
+	userIDRaw, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error": "user not authenticated",
+		})
+		return
+	}
+
+	// Convert userID to uint (handle both string and uint types from JWT middleware)
+	var userID uint
+	switch v := userIDRaw.(type) {
+	case uint:
+		userID = v
+	case string:
+		parsed, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "invalid user ID format",
+			})
+			return
+		}
+		userID = uint(parsed)
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "unexpected user ID type",
 		})
 		return
 	}
@@ -98,7 +121,7 @@ func (h *UserDeletionHandlers) RequestDeletion(c *gin.Context) {
 	// Create deletion request
 	deletionReq, err := h.deletionService.RequestDeletion(
 		c.Request.Context(),
-		userID.(uint),
+		userID,
 		requestType,
 		req.Reason,
 	)
@@ -147,7 +170,15 @@ func (h *UserDeletionHandlers) RequestDeletion(c *gin.Context) {
 // @Router /users/me/deletion/{id} [get]
 // @Security Bearer
 func (h *UserDeletionHandlers) GetDeletionStatus(c *gin.Context) {
-	userID, _ := c.Get("user_id")
+	userIDRaw, _ := c.Get("user_id")
+	userID, err := convertUserID(userIDRaw)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+	
 	requestIDStr := c.Param("id")
 	
 	requestID, err := uuid.Parse(requestIDStr)
@@ -167,7 +198,7 @@ func (h *UserDeletionHandlers) GetDeletionStatus(c *gin.Context) {
 	}
 
 	// Verify the request belongs to the user
-	if request.UserID != userID.(uint) {
+	if request.UserID != userID {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": "access denied",
 		})
@@ -201,7 +232,15 @@ func (h *UserDeletionHandlers) GetDeletionStatus(c *gin.Context) {
 // @Router /users/me/deletion/{id} [delete]
 // @Security Bearer
 func (h *UserDeletionHandlers) CancelDeletion(c *gin.Context) {
-	userID, _ := c.Get("user_id")
+	userIDRaw, _ := c.Get("user_id")
+	userID, err := convertUserID(userIDRaw)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+	
 	requestIDStr := c.Param("id")
 	
 	requestID, err := uuid.Parse(requestIDStr)
@@ -214,7 +253,7 @@ func (h *UserDeletionHandlers) CancelDeletion(c *gin.Context) {
 
 	// Verify ownership
 	request, err := h.deletionService.GetDeletionStatus(c.Request.Context(), requestID)
-	if err != nil || request.UserID != userID.(uint) {
+	if err != nil || request.UserID != userID {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": "access denied",
 		})
@@ -255,7 +294,14 @@ type ExportDataRequest struct {
 // @Router /users/me/export [post]
 // @Security Bearer
 func (h *UserDeletionHandlers) ExportUserData(c *gin.Context) {
-	userID, _ := c.Get("user_id")
+	userIDRaw, _ := c.Get("user_id")
+	userID, err := convertUserID(userIDRaw)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
 	
 	var req ExportDataRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -268,7 +314,7 @@ func (h *UserDeletionHandlers) ExportUserData(c *gin.Context) {
 
 	export, err := h.deletionService.ExportUserData(
 		c.Request.Context(),
-		userID.(uint),
+		userID,
 		req.Format,
 	)
 	if err != nil {
@@ -304,11 +350,18 @@ func (h *UserDeletionHandlers) ExportUserData(c *gin.Context) {
 // @Router /users/me/deletion/history [get]
 // @Security Bearer
 func (h *UserDeletionHandlers) GetDeletionHistory(c *gin.Context) {
-	userID, _ := c.Get("user_id")
+	userIDRaw, _ := c.Get("user_id")
+	userID, err := convertUserID(userIDRaw)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
 	
 	auditLogs, err := h.deletionService.GetDeletionAuditLog(
 		c.Request.Context(),
-		userID.(uint),
+		userID,
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -407,7 +460,23 @@ func (h *UserDeletionHandlers) AdminListPendingDeletions(c *gin.Context) {
 	})
 }
 
-// Helper function
+// Helper functions
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && s[:len(substr)] == substr
+}
+
+// convertUserID safely converts userID from context to uint
+func convertUserID(userIDRaw interface{}) (uint, error) {
+	switch v := userIDRaw.(type) {
+	case uint:
+		return v, nil
+	case string:
+		parsed, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("invalid user ID format")
+		}
+		return uint(parsed), nil
+	default:
+		return 0, fmt.Errorf("unexpected user ID type")
+	}
 }
