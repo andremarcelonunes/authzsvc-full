@@ -471,10 +471,50 @@ func (s *SecurityValidationServiceImpl) createViolation(threatType domain.Threat
 		Timestamp:   time.Now(),
 	}
 
+	// Extract validation context from the context if available
+	if validationCtx := s.extractValidationContext(ctx); validationCtx != nil {
+		violation.UserID = validationCtx.UserID
+		violation.IPAddress = validationCtx.IPAddress
+		violation.UserAgent = validationCtx.UserAgent
+		violation.RequestID = validationCtx.RequestID
+		
+		// Add pattern information from the detection
+		for _, pattern := range s.xssPatterns {
+			if pattern.MatchString(strings.ToLower(value)) {
+				violation.Pattern = pattern.String()
+				break
+			}
+		}
+		if violation.Pattern == "" {
+			for _, pattern := range s.sqlInjectionPatterns {
+				if pattern.MatchString(strings.ToLower(value)) {
+					violation.Pattern = pattern.String()
+					break
+				}
+			}
+		}
+		if violation.Pattern == "" {
+			for _, pattern := range s.scriptPatterns {
+				if pattern.MatchString(strings.ToLower(value)) {
+					violation.Pattern = pattern.String()
+					break
+				}
+			}
+		}
+	}
+
 	// Add metadata
 	violation.Metadata = make(map[string]interface{})
 	violation.Metadata["detection_method"] = "pattern_matching"
 	violation.Metadata["sanitization_level"] = s.sanitizationLevel
+	
+	// Add context metadata if available
+	if violation.IPAddress != "" {
+		violation.Metadata["ip_address"] = violation.IPAddress
+	}
+	if violation.RequestID != "" {
+		violation.Metadata["request_id"] = violation.RequestID
+	}
 
 	return violation
 }
@@ -600,6 +640,27 @@ func (s *SecurityValidationServiceImpl) lenientSanitize(input string) string {
 	result = regexp.MustCompile(`(?i)<script[^>]*>.*?</script>`).ReplaceAllString(result, "")
 	
 	return strings.TrimSpace(result)
+}
+
+// extractValidationContext attempts to extract validation context from the Go context
+// This allows security violations to be populated with request details
+func (s *SecurityValidationServiceImpl) extractValidationContext(ctx context.Context) *domain.ValidationContext {
+	// Try to extract validation context from context values
+	// Context keys should be defined as private types to avoid collisions
+	if validationCtx := ctx.Value("validation_context"); validationCtx != nil {
+		if vCtx, ok := validationCtx.(*domain.ValidationContext); ok {
+			return vCtx
+		}
+	}
+	
+	// Alternative approach: try common context keys used by middleware
+	if validationCtx := ctx.Value("validationContext"); validationCtx != nil {
+		if vCtx, ok := validationCtx.(*domain.ValidationContext); ok {
+			return vCtx
+		}
+	}
+	
+	return nil
 }
 
 // Compile-time interface compliance verification

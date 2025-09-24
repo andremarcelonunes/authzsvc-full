@@ -451,11 +451,20 @@ func (s *ComprehensiveAuditServiceImpl) LogDataWrite(ctx context.Context, userID
 
 // LogDataExport implements domain.ComprehensiveAuditLogger
 func (s *ComprehensiveAuditServiceImpl) LogDataExport(ctx context.Context, userID uint, exportType, legalBasis string, recordsCount int) error {
+	// Extract IP address from context, default to localhost if not available
+	ipAddress := "127.0.0.1"
+	if ipValue := ctx.Value("ip_address"); ipValue != nil {
+		if ip, ok := ipValue.(string); ok && ip != "" {
+			ipAddress = ip
+		}
+	}
+
 	auditEvent := &domain.ComprehensiveAuditEvent{
 		EventType:     domain.EventTypeDataExport,
 		EventCategory: domain.CategoryDataAccess,
 		Timestamp:     time.Now().UTC(),
 		UserID:        &userID,
+		IPAddress:     ipAddress,
 		Success:       true,
 		ResourceType:  "data_export",
 		Action:        "export",

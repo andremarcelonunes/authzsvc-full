@@ -1667,6 +1667,663 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  # ===== LGPD USER DELETION ENDPOINTS =====
+  /users/me/deletion:
+    post:
+      tags: [User Management]
+      summary: Request account deletion (LGPD compliant)
+      description: |
+        Request deletion, anonymization, or deactivation of user account per **LGPD Article 18, VI** (Right to deletion).
+        
+        **LGPD Compliance Features**:
+        - 30-day grace period for cancellation
+        - Multiple deletion types (full, soft, anonymization, deactivation)
+        - Comprehensive audit logging
+        - Legal retention compliance checking
+        
+        **Deletion Types**:
+        - `full_delete`: Complete removal from database
+        - `soft_delete`: Logical deletion with retention
+        - `anonymization`: Personal data anonymization
+        - `deactivation`: Account deactivation only
+        - `export_delete`: Data export then deletion
+        
+        **Process**:
+        1. Request created with 30-day grace period
+        2. User can cancel within grace period
+        3. After grace period, deletion is processed
+        4. All related data cascade deleted/anonymized
+        
+        **Rate limiting**: 3 requests per day per user
+      operationId: requestDeletion
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestDeletionRequest'
+            examples:
+              full_deletion:
+                summary: Request full account deletion
+                value:
+                  deletion_type: "full_delete"
+                  reason: "I no longer wish to use this service and want all my data permanently deleted"
+                  confirm: true
+              anonymization:
+                summary: Request data anonymization
+                value:
+                  deletion_type: "anonymization"
+                  reason: "Please anonymize my personal data while keeping account functionality"
+                  confirm: true
+              deactivation:
+                summary: Request account deactivation
+                value:
+                  deletion_type: "deactivation"
+                  reason: "Temporarily deactivate my account but keep my data"
+                  confirm: true
+      responses:
+        '201':
+          description: Deletion request created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/DeletionRequestResponse'
+              examples:
+                deletion_requested:
+                  summary: Deletion request created
+                  value:
+                    data:
+                      request_id: "123e4567-e89b-12d3-a456-426614174000"
+                      status: "pending"
+                      type: "full_delete"
+                      scheduled_for: "2024-02-15T10:30:00Z"
+                      retention_required: false
+                      message: "Deletion request created. You have 30 days to cancel this request."
+                      lgpd_rights:
+                        article: "Article 18, VI"
+                        description: "Right to deletion of personal data"
+        '400':
+          description: Invalid request or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing_confirmation:
+                  summary: Missing explicit confirmation
+                  value:
+                    error: "deletion must be explicitly confirmed"
+                    hint: "Set 'confirm' to true to proceed"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+                invalid_type:
+                  summary: Invalid deletion type
+                  value:
+                    error: "invalid deletion type"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Deletion blocked for legal reasons
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                legal_hold:
+                  summary: Deletion blocked by legal hold
+                  value:
+                    error: "deletion_blocked"
+                    message: "Account deletion blocked due to ongoing legal proceedings"
+                    lgpd_article: "Article 16 - Data retention for legal compliance"
+                    code: 403
+                    timestamp: "2024-01-15T10:30:00Z"
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /users/me/deletion/{id}:
+    get:
+      tags: [User Management]
+      summary: Check deletion request status
+      description: |
+        Get the current status of a deletion request.
+        
+        **Status Values**:
+        - `pending`: Request created, within grace period
+        - `scheduled`: Grace period ended, scheduled for processing
+        - `processing`: Currently being processed
+        - `completed`: Deletion completed
+        - `cancelled`: Request cancelled by user
+        - `failed`: Processing failed (manual intervention required)
+        
+        **Retention Information**:
+        - Shows if retention is required for legal compliance
+        - Provides retention reason and estimated duration
+      operationId: getDeletionStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Deletion request ID (UUID)
+          schema:
+            type: string
+            format: uuid
+          example: "123e4567-e89b-12d3-a456-426614174000"
+      responses:
+        '200':
+          description: Deletion request status retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/DeletionStatusResponse'
+              examples:
+                pending_request:
+                  summary: Pending deletion request
+                  value:
+                    data:
+                      request_id: "123e4567-e89b-12d3-a456-426614174000"
+                      status: "pending"
+                      type: "full_delete"
+                      requested_at: "2024-01-15T10:30:00Z"
+                      scheduled_for: "2024-02-15T10:30:00Z"
+                      processed_at: null
+                      completed_at: null
+                      retention_required: false
+                      retention_reason: null
+                completed_request:
+                  summary: Completed deletion
+                  value:
+                    data:
+                      request_id: "123e4567-e89b-12d3-a456-426614174000"
+                      status: "completed"
+                      type: "anonymization"
+                      requested_at: "2024-01-15T10:30:00Z"
+                      scheduled_for: "2024-02-15T10:30:00Z"
+                      processed_at: "2024-02-15T10:35:00Z"
+                      completed_at: "2024-02-15T10:36:00Z"
+                      retention_required: true
+                      retention_reason: "Financial records retention - 7 years"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Access denied - request belongs to different user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "access denied"
+                code: 403
+                timestamp: "2024-01-15T10:30:00Z"
+        '404':
+          description: Deletion request not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "deletion request not found"
+                code: 404
+                timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [User Management]
+      summary: Cancel deletion request
+      description: |
+        Cancel a pending deletion request within the grace period.
+        
+        **Requirements**:
+        - Request must be in `pending` status
+        - Must be within 30-day grace period
+        - User must own the request
+        
+        **After Cancellation**:
+        - Request status changes to `cancelled`
+        - Scheduled deletion is removed
+        - User account remains active
+        - Audit log entry created
+      operationId: cancelDeletion
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Deletion request ID (UUID)
+          schema:
+            type: string
+            format: uuid
+          example: "123e4567-e89b-12d3-a456-426614174000"
+      responses:
+        '200':
+          description: Deletion request cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                      request_id:
+                        type: string
+                        format: uuid
+              examples:
+                cancellation_success:
+                  summary: Request cancelled successfully
+                  value:
+                    data:
+                      message: "Deletion request cancelled successfully"
+                      request_id: "123e4567-e89b-12d3-a456-426614174000"
+        '400':
+          description: Cannot cancel deletion request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                already_processed:
+                  summary: Request already processed
+                  value:
+                    error: "cannot cancel deletion"
+                    details: "Request has already been processed"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+                grace_period_expired:
+                  summary: Grace period expired
+                  value:
+                    error: "cannot cancel deletion"
+                    details: "Grace period has expired, request is scheduled for processing"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Access denied - request belongs to different user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "access denied"
+                code: 403
+                timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /users/me/export:
+    post:
+      tags: [User Management]
+      summary: Export user data (LGPD data portability)
+      description: |
+        Export all user data in machine-readable format per **LGPD Article 18, V** (Right to data portability).
+        
+        **Export Includes**:
+        - Personal information (name, email, phone)
+        - Account settings and preferences
+        - Authentication history
+        - Password change history
+        - Deletion request history
+        - All associated metadata
+        
+        **Security Features**:
+        - Encrypted export files
+        - SHA-256 checksums for integrity
+        - Time-limited download URLs (24 hours)
+        - Audit logging of export requests
+        
+        **Supported Formats**:
+        - `json`: Structured JSON format
+        - `csv`: Comma-separated values
+        - `xml`: XML format with schema
+        
+        **Rate limiting**: 1 export per day per user
+      operationId: exportUserData
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportDataRequest'
+            examples:
+              json_export:
+                summary: Export data as JSON
+                value:
+                  format: "json"
+              csv_export:
+                summary: Export data as CSV
+                value:
+                  format: "csv"
+              xml_export:
+                summary: Export data as XML
+                value:
+                  format: "xml"
+      responses:
+        '201':
+          description: Export created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/DataExportResponse'
+              examples:
+                export_created:
+                  summary: Data export created
+                  value:
+                    data:
+                      export_id: "456e7890-e89b-12d3-a456-426614174001"
+                      download_url: "https://api.example.com/exports/456e7890-e89b-12d3-a456-426614174001/download?token=abc123"
+                      format: "json"
+                      size_bytes: 15420
+                      expires_at: "2024-01-16T10:30:00Z"
+                      checksum: "sha256:a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"
+                      lgpd_rights:
+                        article: "Article 18, V"
+                        description: "Right to data portability"
+        '400':
+          description: Invalid export request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_format:
+                  summary: Invalid export format
+                  value:
+                    error: "invalid request"
+                    details: "Format must be one of: json, csv, xml"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          description: Export rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "rate_limit_exceeded"
+                message: "You can only request one export per day"
+                code: 429
+                timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /users/me/deletion/history:
+    get:
+      tags: [User Management]
+      summary: Get deletion request history
+      description: |
+        Get all deletion requests and comprehensive audit logs for the authenticated user.
+        
+        **Audit Information Includes**:
+        - All deletion requests (past and present)
+        - Status changes and timestamps
+        - Cancellation reasons
+        - Processing details
+        - Admin actions (if any)
+        - Data export requests related to deletion
+        
+        **LGPD Compliance**:
+        - Complete transparency of data processing
+        - Audit trail for compliance verification
+        - User's right to information (Article 18, I)
+      operationId: getDeletionHistory
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Deletion history retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      audit_logs:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DeletionAuditLog'
+                      total:
+                        type: integer
+              examples:
+                deletion_history:
+                  summary: User deletion audit history
+                  value:
+                    data:
+                      audit_logs:
+                        - id: "789e0123-e89b-12d3-a456-426614174002"
+                          user_id: 123
+                          action: "deletion_requested"
+                          details: "User requested full account deletion"
+                          timestamp: "2024-01-15T10:30:00Z"
+                          ip_address: "192.168.1.100"
+                          user_agent: "Mozilla/5.0..."
+                          metadata:
+                            deletion_type: "full_delete"
+                            reason: "No longer using service"
+                        - id: "789e0123-e89b-12d3-a456-426614174003"
+                          user_id: 123
+                          action: "deletion_cancelled"
+                          details: "User cancelled deletion request"
+                          timestamp: "2024-01-18T14:20:00Z"
+                          ip_address: "192.168.1.100"
+                          user_agent: "Mozilla/5.0..."
+                          metadata:
+                            cancellation_reason: "Changed mind"
+                      total: 2
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ===== ADMIN LGPD DELETION MANAGEMENT ENDPOINTS =====
+  /admin/users/deletion/{id}/process:
+    post:
+      tags: [Admin - Policies]
+      summary: Process pending deletion request (Admin)
+      description: |
+        Manually trigger processing of a scheduled deletion request.
+        
+        **Admin Privileges Required**:
+        - Must have admin role
+        - Can override grace periods in exceptional circumstances
+        - Can process requests that failed automatic processing
+        
+        **Processing Actions**:
+        - Validates legal requirements
+        - Performs cascade deletion of related data
+        - Creates anonymization logs
+        - Updates audit trails
+        - Notifies compliance systems
+        
+        **Use Cases**:
+        - Manual processing of failed automatic deletions
+        - Emergency deletions for legal compliance
+        - Processing requests outside normal schedule
+      operationId: adminProcessDeletion
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Deletion request ID (UUID)
+          schema:
+            type: string
+            format: uuid
+          example: "123e4567-e89b-12d3-a456-426614174000"
+      responses:
+        '200':
+          description: Deletion request processed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                      request_id:
+                        type: string
+                        format: uuid
+              examples:
+                processing_started:
+                  summary: Manual processing initiated
+                  value:
+                    data:
+                      message: "Deletion request processed successfully"
+                      request_id: "123e4567-e89b-12d3-a456-426614174000"
+        '400':
+          description: Cannot process deletion request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                already_processed:
+                  summary: Request already processed
+                  value:
+                    error: "failed to process deletion"
+                    details: "Request has already been completed"
+                    code: 400
+                    timestamp: "2024-01-15T10:30:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "admin access required"
+                code: 403
+                timestamp: "2024-01-15T10:30:00Z"
+        '404':
+          description: Deletion request not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "deletion request not found"
+                code: 404
+                timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /admin/users/deletion/pending:
+    get:
+      tags: [Admin - Policies]
+      summary: List pending deletion requests (Admin)
+      description: |
+        Get all pending deletion requests that require processing or attention.
+        
+        **Admin Dashboard Features**:
+        - View all pending deletions across system
+        - Filter by deletion type and date
+        - See legal retention requirements
+        - Monitor grace periods
+        - Track processing failures
+        
+        **Compliance Monitoring**:
+        - Identifies requests approaching legal deadlines
+        - Shows retention conflicts
+        - Highlights failed automatic processing
+        - Provides processing priority recommendations
+        
+        **Default Filter**: Requests older than 30 days (grace period expired)
+      operationId: adminListPendingDeletions
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Pending deletion requests retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      pending_deletions:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AdminDeletionRequest'
+                      total:
+                        type: integer
+              examples:
+                pending_requests:
+                  summary: List of pending deletion requests
+                  value:
+                    data:
+                      pending_deletions:
+                        - request_id: "123e4567-e89b-12d3-a456-426614174000"
+                          user_id: 456
+                          user_email: "user@example.com"
+                          deletion_type: "full_delete"
+                          status: "scheduled"
+                          requested_at: "2023-12-15T10:30:00Z"
+                          scheduled_for: "2024-01-15T10:30:00Z"
+                          days_pending: 35
+                          retention_required: false
+                          priority: "high"
+                        - request_id: "789e0123-e89b-12d3-a456-426614174001"
+                          user_id: 789
+                          user_email: "customer@example.com"
+                          deletion_type: "anonymization"
+                          status: "failed"
+                          requested_at: "2024-01-10T15:20:00Z"
+                          scheduled_for: "2024-02-10T15:20:00Z"
+                          days_pending: 5
+                          retention_required: true
+                          retention_reason: "Tax records - 7 year retention"
+                          priority: "urgent"
+                          failure_reason: "Tax record validation required"
+                      total: 2
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "admin access required"
+                code: 403
+                timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   # ===== HEALTH & MONITORING ENDPOINTS =====
   /health:
     get:
@@ -1740,6 +2397,181 @@ paths:
                     type: string
                     format: date-time
                     example: "2024-01-15T10:30:00Z"
+
+  # ===== DOCUMENTATION ENDPOINTS =====
+  /docs:
+    get:
+      tags: [Health & Monitoring]
+      summary: Swagger UI documentation interface
+      description: |
+        Interactive API documentation using Swagger UI.
+        
+        **Features**:
+        - Browse all API endpoints
+        - Test endpoints directly from browser
+        - View request/response schemas
+        - Authentication testing with JWT tokens
+        
+        **Usage**:
+        - Navigate to `/docs` in browser
+        - Use "Authorize" button to set JWT token
+        - Click "Try it out" on any endpoint to test
+      operationId: getSwaggerUI
+      responses:
+        '200':
+          description: Swagger UI HTML page
+          content:
+            text/html:
+              schema:
+                type: string
+                example: "<!DOCTYPE html>..."
+
+  /docs/swagger.yaml:
+    get:
+      tags: [Health & Monitoring]
+      summary: OpenAPI specification file
+      description: |
+        Raw OpenAPI 3.0 specification in YAML format.
+        
+        **Use cases**:
+        - Code generation for client libraries
+        - Import into API testing tools (Postman, Insomnia)
+        - Integration with CI/CD pipelines
+        - Third-party API documentation tools
+        
+        **Format**: OpenAPI 3.0.3 specification
+      operationId: getSwaggerYAML
+      responses:
+        '200':
+          description: OpenAPI specification file
+          content:
+            application/x-yaml:
+              schema:
+                type: string
+                example: |
+                  openapi: 3.0.3
+                  info:
+                    title: AuthzSvc API
+                    version: 1.0.0
+                  paths:
+                    /auth/login:
+                      post:
+                        summary: User login
+        '404':
+          description: Swagger file not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Swagger documentation not found"
+
+  /docs/api:
+    get:
+      tags: [Health & Monitoring]
+      summary: API documentation metadata
+      description: |
+        API documentation metadata and quick reference.
+        
+        **Includes**:
+        - Service information and version
+        - Available endpoints summary
+        - Quick start guide
+        - Feature list
+        - Links to documentation resources
+        
+        **Content-Type**: application/json
+      operationId: getAPIDocumentation
+      responses:
+        '200':
+          description: API documentation metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  title:
+                    type: string
+                    example: "AuthZ Service API Documentation"
+                  description:
+                    type: string
+                    example: "Complete authentication and authorization service"
+                  version:
+                    type: string
+                    example: "1.0.0"
+                  endpoints:
+                    type: object
+                    properties:
+                      swagger_ui:
+                        type: string
+                        example: "/docs"
+                      swagger_yaml:
+                        type: string
+                        example: "/docs/swagger.yaml"
+                  features:
+                    type: array
+                    items:
+                      type: string
+                    example: ["JWT Authentication", "SMS OTP Verification", "RBAC with Casbin"]
+                  quick_start:
+                    type: object
+                    properties:
+                      health_check:
+                        type: string
+                        example: "GET /health"
+                      register:
+                        type: string
+                        example: "POST /auth/register"
+                      login:
+                        type: string
+                        example: "POST /auth/login"
+
+  /metrics:
+    get:
+      tags: [Health & Monitoring]
+      summary: Application metrics endpoint
+      description: |
+        Prometheus-compatible metrics endpoint for monitoring and alerting.
+        
+        **Metrics included**:
+        - HTTP request duration and count
+        - Authentication success/failure rates
+        - Token validation metrics
+        - Database connection pool status
+        - Redis connection metrics
+        - OTP generation/verification rates
+        
+        **Format**: Prometheus text format
+        
+        **Used by**:
+        - Prometheus monitoring
+        - Grafana dashboards  
+        - Alert manager rules
+        - SLI/SLO tracking systems
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP http_requests_total Total number of HTTP requests
+                  # TYPE http_requests_total counter
+                  http_requests_total{method="GET",endpoint="/auth/me",status="200"} 1234
+                  
+                  # HELP auth_success_total Total successful authentications
+                  # TYPE auth_success_total counter
+                  auth_success_total 567
+                  
+                  # HELP jwt_token_validation_duration_seconds JWT token validation duration
+                  # TYPE jwt_token_validation_duration_seconds histogram
+                  jwt_token_validation_duration_seconds_bucket{le="0.001"} 100
+                  jwt_token_validation_duration_seconds_bucket{le="0.01"} 200
+                  jwt_token_validation_duration_seconds_bucket{le="+Inf"} 250
 
 components:
   securitySchemes:
@@ -2197,6 +3029,287 @@ components:
                 message: "Database connection failed"
                 code: 500
                 timestamp: "2024-01-15T10:30:00Z"
+
+    # ===== LGPD DELETION REQUEST SCHEMAS =====
+    RequestDeletionRequest:
+      type: object
+      required:
+        - deletion_type
+        - reason
+        - confirm
+      properties:
+        deletion_type:
+          type: string
+          enum: [full_delete, soft_delete, anonymization, deactivation, export_delete]
+          description: |
+            Type of deletion requested:
+            - `full_delete`: Complete removal from database
+            - `soft_delete`: Logical deletion with retention
+            - `anonymization`: Personal data anonymization
+            - `deactivation`: Account deactivation only
+            - `export_delete`: Data export then deletion
+          example: "full_delete"
+        reason:
+          type: string
+          minLength: 10
+          maxLength: 500
+          description: Reason for deletion request (required for LGPD compliance)
+          example: "I no longer wish to use this service and want all my data permanently deleted"
+        confirm:
+          type: boolean
+          description: Explicit confirmation required for deletion
+          example: true
+
+    DeletionRequestResponse:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: Unique deletion request identifier
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        status:
+          type: string
+          enum: [pending, scheduled, processing, completed, cancelled, failed]
+          description: Current status of the deletion request
+          example: "pending"
+        type:
+          type: string
+          enum: [full_delete, soft_delete, anonymization, deactivation, export_delete]
+          description: Type of deletion requested
+          example: "full_delete"
+        scheduled_for:
+          type: string
+          format: date-time
+          description: When the deletion is scheduled to be processed
+          example: "2024-02-15T10:30:00Z"
+        retention_required:
+          type: boolean
+          description: Whether data retention is required for legal compliance
+          example: false
+        message:
+          type: string
+          description: Human-readable status message
+          example: "Deletion request created. You have 30 days to cancel this request."
+        lgpd_rights:
+          type: object
+          properties:
+            article:
+              type: string
+              example: "Article 18, VI"
+            description:
+              type: string
+              example: "Right to deletion of personal data"
+
+    DeletionStatusResponse:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: Unique deletion request identifier
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        status:
+          type: string
+          enum: [pending, scheduled, processing, completed, cancelled, failed]
+          description: Current status of the deletion request
+          example: "pending"
+        type:
+          type: string
+          enum: [full_delete, soft_delete, anonymization, deactivation, export_delete]
+          description: Type of deletion requested
+          example: "full_delete"
+        requested_at:
+          type: string
+          format: date-time
+          description: When the deletion request was created
+          example: "2024-01-15T10:30:00Z"
+        scheduled_for:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the deletion is scheduled to be processed
+          example: "2024-02-15T10:30:00Z"
+        processed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the deletion processing started
+          example: null
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the deletion was completed
+          example: null
+        retention_required:
+          type: boolean
+          description: Whether data retention is required for legal compliance
+          example: false
+        retention_reason:
+          type: string
+          nullable: true
+          description: Reason for data retention if applicable
+          example: null
+
+    ExportDataRequest:
+      type: object
+      required:
+        - format
+      properties:
+        format:
+          type: string
+          enum: [json, csv, xml]
+          description: |
+            Export format for user data:
+            - `json`: Structured JSON format
+            - `csv`: Comma-separated values
+            - `xml`: XML format with schema
+          example: "json"
+
+    DataExportResponse:
+      type: object
+      properties:
+        export_id:
+          type: string
+          format: uuid
+          description: Unique export identifier
+          example: "456e7890-e89b-12d3-a456-426614174001"
+        download_url:
+          type: string
+          format: uri
+          description: Temporary download URL (expires in 24 hours)
+          example: "https://api.example.com/exports/456e7890-e89b-12d3-a456-426614174001/download?token=abc123"
+        format:
+          type: string
+          enum: [json, csv, xml]
+          description: Export format
+          example: "json"
+        size_bytes:
+          type: integer
+          description: Size of the export file in bytes
+          example: 15420
+        expires_at:
+          type: string
+          format: date-time
+          description: When the download URL expires
+          example: "2024-01-16T10:30:00Z"
+        checksum:
+          type: string
+          description: SHA-256 checksum for file integrity verification
+          example: "sha256:a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"
+        lgpd_rights:
+          type: object
+          properties:
+            article:
+              type: string
+              example: "Article 18, V"
+            description:
+              type: string
+              example: "Right to data portability"
+
+    DeletionAuditLog:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique audit log entry identifier
+          example: "789e0123-e89b-12d3-a456-426614174002"
+        user_id:
+          type: integer
+          description: User ID associated with the action
+          example: 123
+        action:
+          type: string
+          description: Action performed
+          example: "deletion_requested"
+          enum: [deletion_requested, deletion_cancelled, deletion_processed, deletion_completed, data_exported]
+        details:
+          type: string
+          description: Detailed description of the action
+          example: "User requested full account deletion"
+        timestamp:
+          type: string
+          format: date-time
+          description: When the action occurred
+          example: "2024-01-15T10:30:00Z"
+        ip_address:
+          type: string
+          description: IP address from which the action was performed
+          example: "192.168.1.100"
+        user_agent:
+          type: string
+          description: User agent string from the request
+          example: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        metadata:
+          type: object
+          description: Additional metadata specific to the action
+          additionalProperties: true
+          example:
+            deletion_type: "full_delete"
+            reason: "No longer using service"
+
+    AdminDeletionRequest:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: Unique deletion request identifier
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        user_id:
+          type: integer
+          description: ID of the user requesting deletion
+          example: 456
+        user_email:
+          type: string
+          format: email
+          description: Email of the user requesting deletion
+          example: "user@example.com"
+        deletion_type:
+          type: string
+          enum: [full_delete, soft_delete, anonymization, deactivation, export_delete]
+          description: Type of deletion requested
+          example: "full_delete"
+        status:
+          type: string
+          enum: [pending, scheduled, processing, completed, cancelled, failed]
+          description: Current status of the deletion request
+          example: "scheduled"
+        requested_at:
+          type: string
+          format: date-time
+          description: When the deletion request was created
+          example: "2023-12-15T10:30:00Z"
+        scheduled_for:
+          type: string
+          format: date-time
+          description: When the deletion is scheduled to be processed
+          example: "2024-01-15T10:30:00Z"
+        days_pending:
+          type: integer
+          description: Number of days the request has been pending
+          example: 35
+        retention_required:
+          type: boolean
+          description: Whether data retention is required for legal compliance
+          example: false
+        retention_reason:
+          type: string
+          nullable: true
+          description: Reason for data retention if applicable
+          example: "Tax records - 7 year retention"
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+          description: Processing priority based on age and compliance requirements
+          example: "high"
+        failure_reason:
+          type: string
+          nullable: true
+          description: Reason for processing failure if applicable
+          example: "Tax record validation required"
 
 # ===== EXAMPLES & DOCUMENTATION =====
 x-tagGroups:

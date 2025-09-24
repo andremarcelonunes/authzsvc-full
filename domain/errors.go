@@ -68,6 +68,7 @@ var (
 	ErrEncodingViolation    = errors.New("encoding validation failed")
 	ErrContentBlocked       = errors.New("content blocked by security policy")
 	ErrThreatDetected       = errors.New("security threat detected")
+	ErrViolationNotFound    = errors.New("security violation not found")
 )
 
 // Rate limiting errors
@@ -130,4 +131,24 @@ var (
 	ErrForgotPasswordOTPMaxAttempts    = errors.New("maximum OTP attempts exceeded for forgot password")
 	ErrForgotPasswordFailed            = errors.New("forgot password operation failed")
 	ErrEmailPhoneMismatch              = errors.New("email and phone combination not found")
+)
+
+// LGPD/GDPR User Deletion errors
+var (
+	ErrDeletionRequestNotFound     = errors.New("deletion request not found")
+	ErrDeletionBlocked             = errors.New("deletion blocked due to legal requirements")
+	ErrDeletionInProgress          = errors.New("deletion already in progress")
+	ErrDeletionCancelled           = errors.New("deletion request was cancelled")
+	ErrDeletionFailed              = errors.New("deletion operation failed")
+	ErrDataExportNotFound          = errors.New("data export not found")
+	ErrDataExportExpired           = errors.New("data export has expired")
+	ErrDataExportFailed            = errors.New("data export failed")
+	ErrAnonymizationFailed         = errors.New("data anonymization failed")
+	ErrRetentionPolicyViolation    = errors.New("operation violates data retention policy")
+	ErrComplianceCheckFailed       = errors.New("compliance validation failed")
+)
+
+// Generic repository errors
+var (
+	ErrNotFound = errors.New("record not found")
 )

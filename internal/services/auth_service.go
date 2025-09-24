@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -76,33 +77,29 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 		}
 		
 		if !validationResult.Passed {
-			// Convert validation errors to domain errors
+			// Convert validation errors to proper domain errors
 			if len(validationResult.Errors) > 0 {
-				return nil, fmt.Errorf("registration validation failed: %s", validationResult.Errors[0].Message)
+				firstError := validationResult.Errors[0]
+				// Map validation error codes to domain errors
+				switch firstError.Code {
+				case "EMAIL_ALREADY_EXISTS", "PHONE_ALREADY_EXISTS":
+					return nil, domain.ErrUserAlreadyExists
+				default:
+					// Preserve specific validation error message
+					return nil, fmt.Errorf("registration validation failed: %s", firstError.Message)
+				}
 			}
 			return nil, domain.ErrValidationFailed
 		}
 	}
 
-	// Check if user already exists by email
-	existingUser, err := s.userRepo.FindByEmail(ctx, email)
-	if err == nil && existingUser != nil {
-		return nil, domain.ErrUserAlreadyExists
-	}
-
-	// Check if user already exists by phone
-	existingUserByPhone, err := s.userRepo.FindByPhone(ctx, phone)
-	if err == nil && existingUserByPhone != nil {
-		return nil, domain.ErrUserAlreadyExists
-	}
-
-	// Hash password
+	// Hash password before transaction
 	hashedPassword, err := s.passwordSvc.Hash(password)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	// Create user
+	// Create user with atomic duplicate check using database constraints
 	user := &domain.User{
 		Email:        email,
 		Phone:        phone,
@@ -114,6 +111,15 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 	}
 
 	if err := s.userRepo.Create(ctx, user); err != nil {
+		// Check if error is due to unique constraint violation (duplicate email/phone)
+		errorMsg := err.Error()
+		if strings.Contains(errorMsg, "duplicate key") || 
+		   strings.Contains(errorMsg, "UNIQUE constraint") ||
+		   strings.Contains(errorMsg, "violates unique constraint") ||
+		   strings.Contains(errorMsg, "duplicated key") ||
+		   strings.Contains(errorMsg, "already exists") {
+			return nil, domain.ErrUserAlreadyExists
+		}
 		// Log failed registration attempt - CB-183
 		if s.auditSvc != nil {
 			s.auditSvc.LogSystemEvent(ctx, "user_registration_failed", 
@@ -264,9 +270,8 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 	}
 
 	// Implement distributed lock to prevent concurrent refresh operations (if Redis available)
-	// Note: When Redis is not available, we skip locking and proceed without concurrency protection
-	// TEMPORARILY DISABLED FOR TESTING: if s.redisClient != nil {
-	if false && s.redisClient != nil {
+	// Use Redis distributed locking to prevent concurrent refresh token usage
+	if s.redisClient != nil {
 		lockKey := fmt.Sprintf("refresh_lock:%s", claims.SessionID)
 		lockTTL := 30 * time.Second
 		
@@ -433,9 +438,9 @@ func (s *AuthServiceImpl) isRefreshTokenBlacklisted(ctx context.Context, token s
 		return false, nil
 	}
 	if s.redisClient == nil {
-		// If Redis is not available, we can't check blacklist
-		// This means tokens won't be properly revoked (security concern)
-		return false, nil
+		// SECURITY: If Redis is not available, we cannot verify token blacklist
+		// Return error to fail-safe and prevent potential token reuse
+		return false, fmt.Errorf("blacklist verification unavailable: Redis connection required for security")
 	}
 	
 	// Create the same hash used for blacklisting
