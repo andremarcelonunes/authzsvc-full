@@ -47,7 +47,11 @@ func TestRefreshTokenConcurrency(t *testing.T) {
 	// Create service with Redis for security features
 	requestValidator := mocks.NewMockRequestValidationService()
 	auditService := mocks.NewMockComprehensiveAuditService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService)
+	// Add CB-194 dependencies
+	identifierResolver := &mocks.MockIdentifierResolutionService{}
+	emailStrategy := &mocks.MockAuthenticationStrategy{}
+	phoneStrategy := &mocks.MockAuthenticationStrategy{}
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService, identifierResolver, emailStrategy, phoneStrategy)
 
 	// Test concurrent refresh attempts
 	concurrency := 10
@@ -137,10 +141,13 @@ func TestRefreshTokenPerformance(t *testing.T) {
 	// Setup mocks for successful refresh
 	setupSuccessfulRefreshMocks(t, userRepo, sessionRepo, tokenSvc, testUser, testSession)
 
-	// Create service
+	// Create service with CB-194 dependencies
 	requestValidator := mocks.NewMockRequestValidationService()
 	auditService := mocks.NewMockComprehensiveAuditService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService)
+	identifierResolver := &mocks.MockIdentifierResolutionService{}
+	emailStrategy := &mocks.MockAuthenticationStrategy{}
+	phoneStrategy := &mocks.MockAuthenticationStrategy{}
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService, identifierResolver, emailStrategy, phoneStrategy)
 
 	// Performance test
 	iterations := 1000
@@ -207,10 +214,13 @@ func TestRefreshTokenMemoryUsage(t *testing.T) {
 	// Setup mocks for successful refresh
 	setupSuccessfulRefreshMocks(t, userRepo, sessionRepo, tokenSvc, testUser, testSession)
 
-	// Create service
+	// Create service with CB-194 dependencies
 	requestValidator := mocks.NewMockRequestValidationService()
 	auditService := mocks.NewMockComprehensiveAuditService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService)
+	identifierResolver := &mocks.MockIdentifierResolutionService{}
+	emailStrategy := &mocks.MockAuthenticationStrategy{}
+	phoneStrategy := &mocks.MockAuthenticationStrategy{}
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService, identifierResolver, emailStrategy, phoneStrategy)
 
 	// Memory usage test
 	iterations := 10000
@@ -268,10 +278,13 @@ func BenchmarkRefreshToken(b *testing.B) {
 	// Setup mocks for successful refresh
 	setupSuccessfulRefreshMocksForBench(b, userRepo, sessionRepo, tokenSvc, testUser, testSession)
 
-	// Create service
+	// Create service with CB-194 dependencies
 	requestValidator := mocks.NewMockRequestValidationService()
 	auditService := mocks.NewMockComprehensiveAuditService()
-	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService)
+	identifierResolver := &mocks.MockIdentifierResolutionService{}
+	emailStrategy := &mocks.MockAuthenticationStrategy{}
+	phoneStrategy := &mocks.MockAuthenticationStrategy{}
+	authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditService, identifierResolver, emailStrategy, phoneStrategy)
 
 	ctx := context.Background()
 

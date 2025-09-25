@@ -270,6 +270,7 @@ func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.
 	// Determine which identifier to use (backward compatibility support)
 	var identifier string
 	var authMethod domain.IdentifierType
+	var resolution *domain.IdentifierResolution
 	
 	if request.Email != "" {
 		// Legacy email field takes precedence for backward compatibility
@@ -280,7 +281,8 @@ func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.
 		identifier = request.Identifier
 		
 		// Resolve identifier type and normalize
-		resolution, err := s.identifierResolver.ResolveIdentifier(ctx, identifier)
+		var err error
+		resolution, err = s.identifierResolver.ResolveIdentifier(ctx, identifier)
 		if err != nil {
 			return nil, fmt.Errorf("identifier resolution failed: %w", err)
 		}
@@ -358,6 +360,11 @@ func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.
 		ResolutionDuration:   resolutionDuration,
 		LookupDuration:       lookupDuration,
 		ValidationDuration:   tokenDuration,
+	}
+	
+	// Add country code for phone authentication
+	if resolution != nil && authMethod == domain.IdentifierTypePhone {
+		authContext.CountryCode = resolution.CountryCode
 	}
 	
 	// Extract client info from context if available

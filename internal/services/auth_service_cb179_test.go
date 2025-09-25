@@ -252,8 +252,11 @@ func TestRefreshTokenSecurityEnhancements(t *testing.T) {
 				tt.setupRedis()
 			}
 			
-			// Create service with real Redis client (miniredis)
-			authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, nil, nil)
+			// Create service with real Redis client (miniredis) and new CB-194 dependencies
+			identifierResolver := &mocks.MockIdentifierResolutionService{}
+			emailStrategy := &mocks.MockAuthenticationStrategy{}
+			phoneStrategy := &mocks.MockAuthenticationStrategy{}
+			authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, nil, nil, identifierResolver, emailStrategy, phoneStrategy)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -390,7 +393,11 @@ func TestRefreshTokenLockScenarios(t *testing.T) {
 			}
 
 			// Create service with real Redis client
-			authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, nil, nil)
+			// Create service with CB-194 dependencies
+		identifierResolver := &mocks.MockIdentifierResolutionService{}
+		emailStrategy := &mocks.MockAuthenticationStrategy{}
+		phoneStrategy := &mocks.MockAuthenticationStrategy{}
+		authService := NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, nil, nil, identifierResolver, emailStrategy, phoneStrategy)
 
 			// Execute test
 			ctx := createTestContext(t)
