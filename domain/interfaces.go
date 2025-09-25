@@ -11,6 +11,7 @@ type UserRepository interface {
 	FindByEmail(ctx context.Context, email string) (*User, error)
 	FindByPhone(ctx context.Context, phone string) (*User, error)
 	FindByID(ctx context.Context, id uint) (*User, error)
+	FindByIdentifier(ctx context.Context, identifier string, identifierType IdentifierType) (*User, error)
 	Update(ctx context.Context, user *User) error
 	ActivatePhone(ctx context.Context, userID uint) error
 }
@@ -26,6 +27,21 @@ type SessionRepository interface {
 	Update(ctx context.Context, session *Session) error
 }
 
+// AuthenticationStrategy defines strategy pattern for different authentication methods
+type AuthenticationStrategy interface {
+	// Authenticate performs authentication using this specific strategy
+	Authenticate(ctx context.Context, identifier, password string) (*User, error)
+	
+	// SupportsIdentifier checks if this strategy can handle the given identifier
+	SupportsIdentifier(ctx context.Context, identifier string) bool
+	
+	// GetIdentifierType returns the type of identifier this strategy handles
+	GetIdentifierType() IdentifierType
+	
+	// ValidateCredentials performs strategy-specific credential validation
+	ValidateCredentials(ctx context.Context, identifier, password string) error
+}
+
 // AuthService defines authentication business logic
 type AuthService interface {
 	Register(ctx context.Context, email, phone, password, role string) (*User, error)
@@ -33,6 +49,9 @@ type AuthService interface {
 	RefreshToken(ctx context.Context, refreshToken string) (*AuthResult, error)
 	Logout(ctx context.Context, sessionID string) error
 	GetUserProfile(ctx context.Context, userID uint) (*User, error)
+	
+	// AuthenticateUser provides unified authentication with support for email or phone identifier
+	AuthenticateUser(ctx context.Context, request *AuthRequest) (*AuthResult, error)
 }
 
 // OTPService defines OTP operations

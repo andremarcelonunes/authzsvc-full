@@ -36,9 +36,15 @@ type RegisterRequest struct {
 	Role     string `json:"role,omitempty"` // Optional role field, defaults to "user"
 }
 
-// LoginRequest represents login request
+// LoginRequest represents login request - CB-194: Extended for unified authentication
 type LoginRequest struct {
-	Email    string `json:"email" binding:"required,email"`
+	// Unified identifier field - can be email or phone number
+	Identifier string `json:"identifier,omitempty"`
+	
+	// Legacy email field for backward compatibility - when provided, takes precedence over Identifier
+	Email    string `json:"email,omitempty"`
+	
+	// Password for authentication
 	Password string `json:"password" binding:"required"`
 }
 
@@ -90,7 +96,7 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	})
 }
 
-// Login handles user login
+// Login handles user login - CB-194: Enhanced with unified authentication
 func (h *AuthHandlers) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -98,22 +104,61 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 		return
 	}
 
-	result, err := h.authSvc.Login(c.Request.Context(), req.Email, req.Password)
+	// Validation: ensure either email or identifier is provided
+	if req.Email == "" && req.Identifier == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Either email or identifier field must be provided",
+		})
+		return
+	}
+
+	// Create AuthRequest for unified authentication
+	authRequest := &domain.AuthRequest{
+		Email:      req.Email,      // Legacy field for backward compatibility
+		Identifier: req.Identifier, // New unified field
+		Password:   req.Password,
+	}
+
+	// Add client context information for authentication metadata
+	ctx := context.WithValue(c.Request.Context(), "user_agent", c.GetHeader("User-Agent"))
+	ctx = context.WithValue(ctx, "client_ip", c.ClientIP())
+
+	// Use the new AuthenticateUser method which supports both email and phone
+	result, err := h.authSvc.AuthenticateUser(ctx, authRequest)
 	if err != nil {
-		switch err {
-		case domain.ErrInvalidCredentials:
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-		case domain.ErrUserInactive:
-			c.JSON(http.StatusForbidden, gin.H{"error": "Account is inactive"})
-		case domain.ErrPhoneNotVerified:
-			c.JSON(http.StatusForbidden, gin.H{"error": "Phone number not verified"})
+		// Enhanced error handling with specific messages for different identifier types
+		switch {
+		case errors.Is(err, domain.ErrInvalidCredentials):
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "Invalid credentials",
+			})
+		case errors.Is(err, domain.ErrUserInactive):
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "Account is inactive",
+			})
+		case errors.Is(err, domain.ErrPhoneNotVerified):
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "Phone number not verified. Please verify your phone number to login with phone.",
+			})
+		case errors.Is(err, domain.ErrInvalidIdentifier):
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Invalid identifier format. Please provide a valid email address or phone number.",
+			})
+		case errors.Is(err, domain.ErrIdentifierTypeUnknown):
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Unable to determine identifier type. Please provide a valid email address or phone number.",
+			})
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Login failed"})
+			log.Printf("Login failed for identifier %s: %v", getLogSafeIdentifier(req), err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Login failed",
+			})
 		}
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	// Enhanced response with authentication method metadata
+	response := gin.H{
 		"data": gin.H{
 			"access_token":  result.AccessToken,
 			"refresh_token": result.RefreshToken,
@@ -122,10 +167,48 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 			"user": gin.H{
 				"id":    result.User.ID,
 				"email": result.User.Email,
+				"phone": result.User.Phone,
 				"role":  result.User.Role,
 			},
 		},
-	})
+	}
+
+	// Include authentication metadata if available
+	if result.AuthenticationContext != nil {
+		response["data"].(gin.H)["authentication"] = gin.H{
+			"method":              string(result.AuthenticationContext.Method),
+			"authenticated_at":    result.AuthenticationContext.AuthenticatedAt,
+			"country_code":        result.AuthenticationContext.CountryCode,
+		}
+		
+		// Performance metrics (optional, can be enabled for monitoring)
+		if c.GetHeader("X-Include-Performance") == "true" {
+			response["data"].(gin.H)["performance"] = gin.H{
+				"resolution_duration_ms": result.AuthenticationContext.ResolutionDuration.Milliseconds(),
+				"lookup_duration_ms":     result.AuthenticationContext.LookupDuration.Milliseconds(),
+				"validation_duration_ms": result.AuthenticationContext.ValidationDuration.Milliseconds(),
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// getLogSafeIdentifier returns a safe version of the identifier for logging (masks sensitive parts)
+func getLogSafeIdentifier(req LoginRequest) string {
+	if req.Email != "" {
+		if len(req.Email) > 3 {
+			return req.Email[:3] + "***"
+		}
+		return "***"
+	}
+	if req.Identifier != "" {
+		if len(req.Identifier) > 3 {
+			return req.Identifier[:3] + "***"
+		}
+		return "***"
+	}
+	return "unknown"
 }
 
 // SendOTP handles OTP generation and sending

@@ -238,6 +238,98 @@ func (s *AuditIntegratedAuthService) GetUserProfile(ctx context.Context, userID 
 	return user, err
 }
 
+// AuthenticateUser implements domain.AuthService with audit logging for CB-194
+func (s *AuditIntegratedAuthService) AuthenticateUser(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
+	// Determine identifier for logging (preserve privacy)
+	identifier := request.Email
+	if identifier == "" {
+		identifier = request.Identifier
+	}
+	// Mask identifier for privacy
+	maskedIdentifier := s.maskIdentifier(identifier)
+	
+	// Call the original auth service
+	result, err := s.authService.AuthenticateUser(ctx, request)
+	
+	// Log the authentication attempt with method metadata
+	if s.auditLogger != nil {
+		var userID uint = 0
+		var authMethod string = ""
+		if result != nil && result.User != nil {
+			userID = result.User.ID
+		}
+		if result != nil && result.AuthenticationContext != nil {
+			authMethod = string(result.AuthenticationContext.Method)
+		}
+		
+		// Use existing LogLoginAttempt method with enhanced message
+		successMessage := ""
+		if err == nil {
+			successMessage = fmt.Sprintf("authentication successful via %s", authMethod)
+		} else {
+			successMessage = err.Error()
+		}
+		
+		// Log the authentication attempt
+		auditErr := s.auditLogger.LogLoginAttempt(ctx, userID, maskedIdentifier, authMethod, err == nil, successMessage)
+		if auditErr != nil {
+			s.logger.Error("Failed to log authentication event",
+				"error", auditErr,
+				"user_id", userID,
+				"auth_method", authMethod,
+				"success", err == nil,
+			)
+		}
+	}
+	
+	return result, err
+}
+
+// maskIdentifier masks sensitive parts of identifiers for logging
+func (s *AuditIntegratedAuthService) maskIdentifier(identifier string) string {
+	if identifier == "" {
+		return ""
+	}
+	
+	// For emails, show first 3 chars and domain
+	if containsAt := false; len(identifier) > 0 {
+		for _, char := range identifier {
+			if char == '@' {
+				containsAt = true
+				break
+			}
+		}
+		if containsAt {
+			parts := make([]string, 0, 2)
+			current := ""
+			for _, char := range identifier {
+				if char == '@' {
+					parts = append(parts, current)
+					current = ""
+				} else {
+					current += string(char)
+				}
+			}
+			parts = append(parts, current)
+			
+			if len(parts) == 2 && len(parts[0]) > 3 {
+				return parts[0][:3] + "***@" + parts[1]
+			}
+		}
+	}
+	
+	// For phone numbers, show country code and last 4 digits
+	if len(identifier) > 7 {
+		if identifier[0] == '+' {
+			// International format
+			return identifier[:2] + "***" + identifier[len(identifier)-4:]
+		}
+		return "***" + identifier[len(identifier)-4:]
+	}
+	
+	return "***"
+}
+
 // extractClientContext extracts client information from the request context
 func (s *AuditIntegratedAuthService) extractClientContext(ctx context.Context) *domain.ClientContext {
 	clientCtx := &domain.ClientContext{

@@ -52,7 +52,12 @@ func createAuthServiceForTest(t *testing.T,
 	// Use mock audit service for tests
 	auditSvc := mocks.NewMockComprehensiveAuditService()
 	
-	return NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditSvc)
+	// CB-194: Create mock dependencies for unified authentication
+	identifierResolver := mocks.NewMockIdentifierResolutionService()
+	emailAuthStrategy := mocks.NewMockEmailAuthenticationStrategy()
+	phoneAuthStrategy := mocks.NewMockPhoneAuthenticationStrategy()
+	
+	return NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, redisClient, requestValidator, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy)
 }
 
 // createValidUser creates a valid user entity for testing

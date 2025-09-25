@@ -136,6 +136,12 @@ func (c *Container) initServices() error {
 
 	// Initialize auth service (depends on all other services)
 	// Note: RequestValidationSvc will be set after validation services are initialized
+	
+	// CB-194: Initialize identifier resolution and authentication strategies
+	identifierResolver := services.NewIdentifierResolutionService()
+	emailAuthStrategy := services.NewEmailAuthStrategy(c.UserRepo, c.PasswordSvc, identifierResolver)
+	phoneAuthStrategy := services.NewPhoneAuthStrategy(c.UserRepo, c.PasswordSvc, identifierResolver)
+	
 	c.AuthSvc = services.NewAuthService(
 		c.UserRepo,
 		c.SessionRepo,
@@ -144,8 +150,11 @@ func (c *Container) initServices() error {
 		c.OTPSvc,
 		c.PolicySvc, // Will be initialized separately
 		c.RedisClient,
-		nil,        // RequestValidationSvc will be set in initValidationServices
-		c.AuditSvc, // CB-183: Audit service
+		nil,                  // RequestValidationSvc will be set in initValidationServices
+		c.AuditSvc,           // CB-183: Audit service
+		identifierResolver,   // CB-194: Identifier resolution service
+		emailAuthStrategy,    // CB-194: Email authentication strategy
+		phoneAuthStrategy,    // CB-194: Phone authentication strategy
 	)
 
 	return nil
@@ -217,6 +226,11 @@ func (c *Container) initValidationServices() error {
 	)
 
 	// Update AuthService with the request validator
+	// CB-194: Re-initialize CB-194 services for consistency
+	identifierResolver := services.NewIdentifierResolutionService()
+	emailAuthStrategy := services.NewEmailAuthStrategy(c.UserRepo, c.PasswordSvc, identifierResolver)
+	phoneAuthStrategy := services.NewPhoneAuthStrategy(c.UserRepo, c.PasswordSvc, identifierResolver)
+	
 	c.AuthSvc = services.NewAuthService(
 		c.UserRepo,
 		c.SessionRepo,
@@ -226,7 +240,10 @@ func (c *Container) initValidationServices() error {
 		c.PolicySvc,
 		c.RedisClient,
 		c.RequestValidationSvc,
-		c.AuditSvc, // CB-183: Audit service
+		c.AuditSvc,           // CB-183: Audit service
+		identifierResolver,   // CB-194: Identifier resolution service
+		emailAuthStrategy,    // CB-194: Email authentication strategy
+		phoneAuthStrategy,    // CB-194: Phone authentication strategy
 	)
 
 	return nil

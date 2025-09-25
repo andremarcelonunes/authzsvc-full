@@ -217,8 +217,14 @@ func Run(cfg *config.Config) error {
 		requestValidationConfig,
 	)
 
-	// Initialize auth service with validation support
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, requestValidationSvc, auditSvc)
+	// CB-194: Initialize identifier resolution service and authentication strategies
+	log.Println("CB-194: Initializing unified authentication system...")
+	identifierResolver := services.NewIdentifierResolutionService()
+	emailAuthStrategy := services.NewEmailAuthStrategy(userRepo, passwordSvc, identifierResolver)
+	phoneAuthStrategy := services.NewPhoneAuthStrategy(userRepo, passwordSvc, identifierResolver)
+
+	// Initialize auth service with validation support and unified authentication (CB-194)
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, requestValidationSvc, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy)
 
 	// Configure validation middleware
 	validationConfig := middleware.ValidationConfig{
