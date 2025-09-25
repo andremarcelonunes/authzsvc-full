@@ -13,12 +13,18 @@ info:
     - **Session management** with Redis-based distributed storage
     - **95%+ test coverage** with comprehensive security features
     
-    ## Authentication Flow
+    ## Authentication Flow (CB-194 Enhanced)
     1. **Register** user with email/phone
     2. **Verify phone** via SMS OTP
-    3. **Login** to get JWT tokens
+    3. **Login with email OR phone** to get JWT tokens (unified authentication)
     4. **Use access token** for API calls
     5. **Refresh tokens** when expired
+    
+    ## CB-194: Dual Authentication
+    - **Smart detection**: Automatically detects email vs phone input
+    - **Unified endpoint**: Single `/auth/login` endpoint for both email and phone
+    - **E.164 normalization**: International phone numbers normalized
+    - **Backward compatible**: Existing email-only authentication still works
     
     ## Authorization System
     - **Role inheritance**: admin inherits user permissions
@@ -153,21 +159,28 @@ paths:
   /auth/login:
     post:
       tags: [Authentication]
-      summary: User login
+      summary: User login (CB-194 Enhanced - Email OR Phone)
       description: |
-        Authenticate user and receive JWT tokens.
+        Authenticate user with email OR phone number and receive JWT tokens.
+        
+        **CB-194 Features**:
+        - **Unified authentication**: Use email OR phone number
+        - **Smart detection**: Automatically detects identifier type
+        - **Backward compatible**: Legacy email field still supported
+        - **Enhanced context**: Response includes authentication method used
         
         **Requirements**:
-        - Valid email and password
-        - Phone number must be verified
+        - Valid email/phone and password
+        - Phone number must be verified (for phone auth)
         - Account must be active
         
         **Returns**:
         - Access token (15min TTL)
         - Refresh token (7 days TTL)  
         - User profile information
+        - Authentication context (method, normalized identifier)
         
-        **Rate limiting**: 5 requests per 5 minutes per email
+        **Rate limiting**: 5 requests per 5 minutes per identifier
       operationId: loginUser
       requestBody:
         required: true
@@ -176,16 +189,32 @@ paths:
             schema:
               $ref: '#/components/schemas/LoginRequest'
             examples:
-              user_login:
-                summary: User login
+              email_legacy:
+                summary: Legacy email authentication (still supported)
                 value:
                   email: "user@example.com"
                   password: "SecurePass123!"
-              admin_login:
-                summary: Admin login
+              email_unified:
+                summary: Email authentication via identifier field (CB-194)
                 value:
-                  email: "admin@example.com"
-                  password: "AdminPass123!"
+                  identifier: "user@example.com"
+                  password: "SecurePass123!"
+              phone_unified:
+                summary: Phone authentication via identifier field (CB-194)
+                value:
+                  identifier: "+1234567890"
+                  password: "SecurePass123!"
+              phone_no_country_code:
+                summary: Phone without country code (defaults to +1)
+                value:
+                  identifier: "2345678901"
+                  password: "SecurePass123!"
+              backward_compatibility:
+                summary: Email takes precedence when both fields provided
+                value:
+                  email: "priority@example.com"
+                  identifier: "ignored@example.com"
+                  password: "SecurePass123!"
       responses:
         '200':
           description: Login successful
@@ -634,6 +663,192 @@ paths:
                     error: "User account is inactive"
                     code: 401
                     timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/verify:
+    get:
+      tags: [Token Management]
+      summary: Verify JWT token for external services
+      description: |
+        **Token verification endpoint for microservices integration**
+        
+        Validates JWT access tokens and returns token information. 
+        This endpoint is designed for external services to verify user authentication.
+        
+        **Features**:
+        - JWT token signature validation
+        - Token expiration checking  
+        - Session existence verification in Redis
+        - User-session ownership validation
+        - Comprehensive error codes for different failure scenarios
+        
+        **Use Cases**:
+        - Microservices token validation
+        - API gateway authentication
+        - Service-to-service authentication verification
+        - External authorization checks
+        
+        **Security**: Does not require additional middleware - validates itself
+      operationId: verifyToken
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          description: "Bearer token to verify"
+          schema:
+            type: string
+            example: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+      responses:
+        '200':
+          description: Token is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    example: true
+                  token_type:
+                    type: string
+                    example: "access_token"
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                        description: User ID from token claims
+                        example: 4684
+                      role:
+                        type: string
+                        description: User role from token claims
+                        example: "user"
+                      session_id:
+                        type: string
+                        description: Session ID from token claims
+                        example: "sess_4684_123456789"
+                      issued_at:
+                        type: integer
+                        description: Token issued timestamp (Unix)
+                        example: 1758811485
+                      expires_at:
+                        type: integer
+                        description: Token expiration timestamp (Unix)
+                        example: 1758812385
+              examples:
+                valid_token_with_session:
+                  summary: Valid token with session
+                  value:
+                    valid: true
+                    token_type: "access_token"
+                    user:
+                      id: 4684
+                      role: "user"
+                      session_id: "sess_4684_123456789"
+                      issued_at: 1758811485
+                      expires_at: 1758812385
+                valid_token_no_session:
+                  summary: Valid token without session
+                  value:
+                    valid: true
+                    token_type: "access_token"
+                    user:
+                      id: 1234
+                      role: "admin"
+                      session_id: ""
+                      issued_at: 1758811400
+                      expires_at: 1758812300
+        '400':
+          description: Bad request - missing or invalid Authorization header
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+                    description: Error description
+                  error_code:
+                    type: string
+                    description: Machine-readable error code
+              examples:
+                missing_header:
+                  summary: Missing Authorization header
+                  value:
+                    valid: false
+                    error: "Authorization header required"
+                    error_code: "MISSING_AUTHORIZATION_HEADER"
+                invalid_format:
+                  summary: Invalid header format
+                  value:
+                    valid: false
+                    error: "Invalid authorization header format"
+                    error_code: "INVALID_AUTHORIZATION_FORMAT"
+        '401':
+          description: Token is invalid, expired, or session issues
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+                    description: Error description
+                  error_code:
+                    type: string
+                    description: Machine-readable error code
+              examples:
+                token_expired:
+                  summary: Token has expired
+                  value:
+                    valid: false
+                    error: "Token expired"
+                    error_code: "TOKEN_EXPIRED"
+                token_invalid:
+                  summary: Token is invalid
+                  value:
+                    valid: false
+                    error: "Token invalid"
+                    error_code: "TOKEN_INVALID"
+                token_malformed:
+                  summary: Token is malformed
+                  value:
+                    valid: false
+                    error: "Token malformed"
+                    error_code: "TOKEN_MALFORMED"
+                session_invalid:
+                  summary: Session not found or expired
+                  value:
+                    valid: false
+                    error: "Session invalid or expired"
+                    error_code: "SESSION_INVALID"
+                session_user_mismatch:
+                  summary: Session belongs to different user
+                  value:
+                    valid: false
+                    error: "Session user mismatch"
+                    error_code: "SESSION_USER_MISMATCH"
+                session_expired:
+                  summary: Session has expired
+                  value:
+                    valid: false
+                    error: "Session expired"
+                    error_code: "SESSION_EXPIRED"
+                validation_failed:
+                  summary: General validation failure
+                  value:
+                    valid: false
+                    error: "Token validation failed"
+                    error_code: "TOKEN_VALIDATION_FAILED"
         '500':
           $ref: '#/components/responses/InternalServerError'
 
@@ -2638,18 +2853,25 @@ components:
     LoginRequest:
       type: object
       required:
-        - email
         - password
       properties:
         email:
           type: string
           format: email
-          description: User's email address
-          example: user@example.com
+          description: "Legacy email field for backward compatibility. Takes precedence over identifier when both provided."
+          example: "user@example.com"
+        identifier:
+          type: string
+          description: "CB-194: Unified identifier field - can be email address or phone number. Smart detection automatically determines type. Examples: 'user@example.com' (email), '+1234567890' (international phone), '2345678901' (US phone without country code)"
+          example: "user@example.com"
         password:
           type: string
-          description: User's password
-          example: SecurePass123!
+          description: "User's password"
+          example: "SecurePass123!"
+      anyOf:
+        - required: ["email"]
+        - required: ["identifier"]
+      additionalProperties: false
 
     OTPSendRequest:
       type: object
@@ -2746,8 +2968,14 @@ components:
           type: integer
           description: Access token TTL in seconds
           example: 900
+        session_id:
+          type: string
+          description: Session identifier
+          example: "sess_abc123def456"
         user:
           $ref: '#/components/schemas/UserInfo'
+        authentication_context:
+          $ref: '#/components/schemas/AuthenticationContext'
 
     UserInfo:
       type: object
@@ -2806,6 +3034,38 @@ components:
           format: date-time
           description: Last update timestamp
           example: "2024-01-15T10:35:00Z"
+
+    AuthenticationContext:
+      type: object
+      description: "CB-194: Enhanced authentication context providing details about how user authenticated"
+      properties:
+        method:
+          type: string
+          description: Authentication method used
+          enum: [email, phone]
+          example: "email"
+        original_identifier:
+          type: string
+          description: Original identifier as provided by user
+          example: "user@example.com"
+        normalized_identifier:
+          type: string
+          description: Normalized identifier used for authentication
+          example: "user@example.com"
+        country_code:
+          type: string
+          description: Country code for phone authentication (empty for email)
+          example: "1"
+        authenticated_at:
+          type: string
+          format: date-time
+          description: Timestamp when authentication occurred
+          example: "2025-01-15T10:30:00Z"
+      required:
+        - method
+        - original_identifier
+        - normalized_identifier
+        - authenticated_at
 
     # ===== ENVOY EXTERNAL AUTHZ SCHEMAS =====
     EnvoyAuthzRequest:
