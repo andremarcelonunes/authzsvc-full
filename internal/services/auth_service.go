@@ -26,6 +26,11 @@ type AuthServiceImpl struct {
 	
 	// Audit logging service - CB-183
 	auditSvc        domain.ComprehensiveAuditService
+	
+	// CB-194: Authentication strategies and identifier resolution
+	identifierResolver domain.IdentifierResolutionService
+	emailAuthStrategy  domain.AuthenticationStrategy
+	phoneAuthStrategy  domain.AuthenticationStrategy
 }
 
 // NewAuthService creates a new auth service
@@ -39,17 +44,23 @@ func NewAuthService(
 	redisClient *redis.Client,
 	requestValidator domain.RequestValidationService,
 	auditSvc domain.ComprehensiveAuditService,
+	identifierResolver domain.IdentifierResolutionService,
+	emailAuthStrategy domain.AuthenticationStrategy,
+	phoneAuthStrategy domain.AuthenticationStrategy,
 ) domain.AuthService {
 	return &AuthServiceImpl{
-		userRepo:         userRepo,
-		sessionRepo:      sessionRepo,
-		passwordSvc:      passwordSvc,
-		tokenSvc:         tokenSvc,
-		otpSvc:           otpSvc,
-		policySvc:        policySvc,
-		redisClient:      redisClient,
-		requestValidator: requestValidator,
-		auditSvc:         auditSvc,
+		userRepo:           userRepo,
+		sessionRepo:        sessionRepo,
+		passwordSvc:        passwordSvc,
+		tokenSvc:           tokenSvc,
+		otpSvc:             otpSvc,
+		policySvc:          policySvc,
+		redisClient:        redisClient,
+		requestValidator:   requestValidator,
+		auditSvc:           auditSvc,
+		identifierResolver: identifierResolver,
+		emailAuthStrategy:  emailAuthStrategy,
+		phoneAuthStrategy:  phoneAuthStrategy,
 	}
 }
 
@@ -248,6 +259,135 @@ func (s *AuthServiceImpl) Login(ctx context.Context, email, password string) (*d
 		RefreshToken: refreshToken,
 		SessionID:    session.ID,
 		ExpiresIn:    15 * 60, // 15 minutes in seconds
+	}, nil
+}
+
+// AuthenticateUser implements domain.AuthService - CB-194
+// Provides unified authentication with support for email or phone identifier
+func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
+	startTime := time.Now()
+	
+	// Determine which identifier to use (backward compatibility support)
+	var identifier string
+	var authMethod domain.IdentifierType
+	var resolution *domain.IdentifierResolution
+	
+	if request.Email != "" {
+		// Legacy email field takes precedence for backward compatibility
+		identifier = request.Email
+		authMethod = domain.IdentifierTypeEmail
+	} else if request.Identifier != "" {
+		// Use unified identifier field and resolve its type
+		identifier = request.Identifier
+		
+		// Resolve identifier type and normalize
+		var err error
+		resolution, err = s.identifierResolver.ResolveIdentifier(ctx, identifier)
+		if err != nil {
+			return nil, fmt.Errorf("identifier resolution failed: %w", err)
+		}
+		
+		if !resolution.IsValid {
+			return nil, fmt.Errorf("invalid identifier: %s", resolution.ValidationMessage)
+		}
+		
+		authMethod = resolution.Type
+		identifier = resolution.NormalizedValue
+	} else {
+		return nil, fmt.Errorf("either email or identifier field must be provided")
+	}
+	
+	if request.Password == "" {
+		return nil, fmt.Errorf("password is required")
+	}
+	
+	resolutionDuration := time.Since(startTime)
+	
+	// Select appropriate authentication strategy
+	var authStrategy domain.AuthenticationStrategy
+	switch authMethod {
+	case domain.IdentifierTypeEmail:
+		authStrategy = s.emailAuthStrategy
+	case domain.IdentifierTypePhone:
+		authStrategy = s.phoneAuthStrategy
+	default:
+		return nil, fmt.Errorf("unsupported authentication method: %s", authMethod)
+	}
+	
+	// Perform authentication using selected strategy
+	lookupStart := time.Now()
+	user, err := authStrategy.Authenticate(ctx, identifier, request.Password)
+	if err != nil {
+		// Log failed authentication attempt - CB-183
+		if s.auditSvc != nil {
+			s.auditSvc.LogLoginAttempt(ctx, 0, identifier, string(authMethod), false, err.Error())
+		}
+		return nil, err
+	}
+	lookupDuration := time.Since(lookupStart)
+	
+	// Generate session and tokens
+	sessionStart := time.Now()
+	session := &domain.Session{
+		ID:        fmt.Sprintf("sess_%d_%d", user.ID, time.Now().UnixNano()),
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+		CreatedAt: time.Now(),
+	}
+	
+	if err := s.sessionRepo.Create(ctx, session); err != nil {
+		return nil, fmt.Errorf("failed to create session: %w", err)
+	}
+	
+	// Generate tokens
+	accessToken, err := s.tokenSvc.GenerateAccessToken(user.ID, user.Role, session.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate access token: %w", err)
+	}
+	
+	refreshToken, err := s.tokenSvc.GenerateRefreshToken(user.ID, user.Role, session.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
+	}
+	tokenDuration := time.Since(sessionStart)
+	
+	// Create authentication context for metadata
+	authContext := &domain.AuthenticationContext{
+		Method:               authMethod,
+		OriginalIdentifier:   request.Identifier,
+		NormalizedIdentifier: identifier,
+		AuthenticatedAt:      time.Now(),
+		ResolutionDuration:   resolutionDuration,
+		LookupDuration:       lookupDuration,
+		ValidationDuration:   tokenDuration,
+	}
+	
+	// Add country code for phone authentication
+	if resolution != nil && authMethod == domain.IdentifierTypePhone {
+		authContext.CountryCode = resolution.CountryCode
+	}
+	
+	// Extract client info from context if available
+	if userAgent, ok := ctx.Value("user_agent").(string); ok {
+		authContext.UserAgent = userAgent
+	}
+	if ipAddress, ok := ctx.Value("client_ip").(string); ok {
+		authContext.IPAddress = ipAddress
+	}
+	
+	// Log successful authentication - CB-183 with method metadata
+	if s.auditSvc != nil {
+		s.auditSvc.LogLoginAttempt(ctx, user.ID, identifier, string(authMethod), true, 
+			fmt.Sprintf("authentication successful via %s", authMethod))
+	}
+	
+	return &domain.AuthResult{
+		User:                  user,
+		AccessToken:           accessToken,
+		RefreshToken:          refreshToken,
+		SessionID:             session.ID,
+		ExpiresIn:             15 * 60, // 15 minutes in seconds
+		AuthenticationContext: authContext,
 	}, nil
 }
 

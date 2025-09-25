@@ -86,6 +86,30 @@ func (r *UserRepositoryImpl) FindByID(ctx context.Context, id uint) (*domain.Use
 	return r.dbToDomain(&dbUser), nil
 }
 
+// FindByIdentifier implements domain.UserRepository - CB-194
+func (r *UserRepositoryImpl) FindByIdentifier(ctx context.Context, identifier string, identifierType domain.IdentifierType) (*domain.User, error) {
+	var dbUser DBUser
+	var err error
+
+	switch identifierType {
+	case domain.IdentifierTypeEmail:
+		err = r.db.WithContext(ctx).Where("email = ?", identifier).First(&dbUser).Error
+	case domain.IdentifierTypePhone:
+		err = r.db.WithContext(ctx).Where("phone = ?", identifier).First(&dbUser).Error
+	default:
+		return nil, domain.ErrIdentifierTypeUnknown
+	}
+
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, domain.ErrUserNotFound
+		}
+		return nil, err
+	}
+
+	return r.dbToDomain(&dbUser), nil
+}
+
 // Update implements domain.UserRepository
 func (r *UserRepositoryImpl) Update(ctx context.Context, user *domain.User) error {
 	dbUser := r.domainToDB(user)

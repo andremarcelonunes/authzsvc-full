@@ -11,6 +11,7 @@ type UserRepository interface {
 	FindByEmail(ctx context.Context, email string) (*User, error)
 	FindByPhone(ctx context.Context, phone string) (*User, error)
 	FindByID(ctx context.Context, id uint) (*User, error)
+	FindByIdentifier(ctx context.Context, identifier string, identifierType IdentifierType) (*User, error)
 	Update(ctx context.Context, user *User) error
 	ActivatePhone(ctx context.Context, userID uint) error
 }
@@ -26,6 +27,21 @@ type SessionRepository interface {
 	Update(ctx context.Context, session *Session) error
 }
 
+// AuthenticationStrategy defines strategy pattern for different authentication methods
+type AuthenticationStrategy interface {
+	// Authenticate performs authentication using this specific strategy
+	Authenticate(ctx context.Context, identifier, password string) (*User, error)
+	
+	// SupportsIdentifier checks if this strategy can handle the given identifier
+	SupportsIdentifier(ctx context.Context, identifier string) bool
+	
+	// GetIdentifierType returns the type of identifier this strategy handles
+	GetIdentifierType() IdentifierType
+	
+	// ValidateCredentials performs strategy-specific credential validation
+	ValidateCredentials(ctx context.Context, identifier, password string) error
+}
+
 // AuthService defines authentication business logic
 type AuthService interface {
 	Register(ctx context.Context, email, phone, password, role string) (*User, error)
@@ -33,6 +49,9 @@ type AuthService interface {
 	RefreshToken(ctx context.Context, refreshToken string) (*AuthResult, error)
 	Logout(ctx context.Context, sessionID string) error
 	GetUserProfile(ctx context.Context, userID uint) (*User, error)
+	
+	// AuthenticateUser provides unified authentication with support for email or phone identifier
+	AuthenticateUser(ctx context.Context, request *AuthRequest) (*AuthResult, error)
 }
 
 // OTPService defines OTP operations
@@ -99,6 +118,39 @@ type PhoneVerificationPolicy interface {
 	RequiresPhoneVerification() bool
 	AllowUnverifiedLogin() bool
 	ShouldEnforceVerification(user *User) bool
+}
+
+// IdentifierType represents the type of authentication identifier
+type IdentifierType string
+
+const (
+	IdentifierTypeEmail IdentifierType = "email"
+	IdentifierTypePhone IdentifierType = "phone"
+)
+
+// IdentifierResolutionService handles smart detection and resolution of authentication identifiers
+type IdentifierResolutionService interface {
+	// ResolveIdentifier detects whether an identifier is email or phone and normalizes it
+	ResolveIdentifier(ctx context.Context, identifier string) (*IdentifierResolution, error)
+	
+	// NormalizePhone converts phone number to E.164 format for consistent storage/lookup
+	NormalizePhone(ctx context.Context, phone string, countryCode string) (string, error)
+	
+	// NormalizeEmail converts email to lowercase and trims whitespace
+	NormalizeEmail(ctx context.Context, email string) (string, error)
+	
+	// ValidateIdentifier performs format validation on the identifier
+	ValidateIdentifier(ctx context.Context, identifier string, identifierType IdentifierType) error
+}
+
+// IdentifierResolution contains the resolved identifier information
+type IdentifierResolution struct {
+	Type              IdentifierType `json:"type"`
+	OriginalValue     string         `json:"original_value"`
+	NormalizedValue   string         `json:"normalized_value"`
+	CountryCode       string         `json:"country_code,omitempty"`
+	IsValid           bool           `json:"is_valid"`
+	ValidationMessage string         `json:"validation_message,omitempty"`
 }
 
 // RequestValidationService orchestrates comprehensive request validation

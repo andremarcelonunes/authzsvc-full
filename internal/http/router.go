@@ -48,6 +48,7 @@ func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers,
 	auth.POST("/otp/send", ah.SendOTP)
 	auth.POST("/otp/verify", ah.VerifyOTP)
 	auth.POST("/refresh", ah.Refresh)
+	auth.GET("/verify", ah.VerifyToken) // Token verification endpoint for external services
 
 	// Protected endpoints with JWT and Casbin, optionally with validation
 	v := r.Group("/")

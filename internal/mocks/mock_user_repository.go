@@ -12,6 +12,7 @@ type MockUserRepository struct {
 	FindByEmailFunc    func(ctx context.Context, email string) (*domain.User, error)
 	FindByPhoneFunc    func(ctx context.Context, phone string) (*domain.User, error)
 	FindByIDFunc       func(ctx context.Context, id uint) (*domain.User, error)
+	FindByIdentifierFunc func(ctx context.Context, identifier string, identifierType domain.IdentifierType) (*domain.User, error) // CB-194
 	UpdateFunc         func(ctx context.Context, user *domain.User) error
 	ActivatePhoneFunc  func(ctx context.Context, userID uint) error
 }
@@ -55,6 +56,23 @@ func (m *MockUserRepository) FindByID(ctx context.Context, id uint) (*domain.Use
 	}
 	// Default behavior: not found
 	return nil, domain.ErrUserNotFound
+}
+
+// FindByIdentifier finds a user by identifier (email or phone) - CB-194
+func (m *MockUserRepository) FindByIdentifier(ctx context.Context, identifier string, identifierType domain.IdentifierType) (*domain.User, error) {
+	if m.FindByIdentifierFunc != nil {
+		return m.FindByIdentifierFunc(ctx, identifier, identifierType)
+	}
+	
+	// Default behavior: delegate to appropriate method
+	switch identifierType {
+	case domain.IdentifierTypeEmail:
+		return m.FindByEmail(ctx, identifier)
+	case domain.IdentifierTypePhone:
+		return m.FindByPhone(ctx, identifier)
+	default:
+		return nil, domain.ErrIdentifierTypeUnknown
+	}
 }
 
 // Update updates an existing user

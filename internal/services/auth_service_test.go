@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/you/authzsvc/domain"
 	"github.com/you/authzsvc/internal/mocks"
 )
@@ -263,8 +265,19 @@ func TestAuthServiceImpl_Register(t *testing.T) {
 				validationSvc = createSuccessfulValidationMock(t)
 			}
 
+			// Create Redis client for testing
+			mr, err := miniredis.Run()
+			if err != nil {
+				t.Fatalf("failed to start miniredis: %v", err)
+			}
+			defer mr.Close()
+
+			redisClient := redis.NewClient(&redis.Options{
+				Addr: mr.Addr(),
+			})
+
 			// Create service
-			authService := createAuthServiceForTest(t, userRepo, nil, passwordSvc, nil, otpSvc, nil, nil, validationSvc)
+			authService := createAuthServiceForTest(t, userRepo, nil, passwordSvc, nil, otpSvc, nil, redisClient, validationSvc)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -558,7 +571,18 @@ func TestAuthServiceImpl_Login(t *testing.T) {
 				validationSvc = createSuccessfulValidationMock(t)
 			}
 			
-			authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, nil, nil, nil, validationSvc)
+			// Create Redis client for testing
+			mr, err := miniredis.Run()
+			if err != nil {
+				t.Fatalf("failed to start miniredis: %v", err)
+			}
+			defer mr.Close()
+
+			redisClient := redis.NewClient(&redis.Options{
+				Addr: mr.Addr(),
+			})
+
+			authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, nil, nil, redisClient, validationSvc)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -692,7 +716,7 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 					return nil, domain.ErrUserNotFound
 				}
 			},
-			expectedError: fmt.Errorf("user lookup failed for user ID 999 in session sess_123_456789: user not found"),
+			expectedError: errors.New("user lookup failed for user ID 999"),
 			validateResult: func(t *testing.T, result *domain.AuthResult) {
 				if result != nil {
 					t.Error("expected result to be nil when user not found")
@@ -720,7 +744,7 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 					return "", errors.New("token generation failed")
 				}
 			},
-			expectedError: fmt.Errorf("access token generation failed for user 1 (session sess_123_456789): token generation failed"),
+			expectedError: errors.New("access token generation failed for user 1"),
 			validateResult: func(t *testing.T, result *domain.AuthResult) {
 				if result != nil {
 					t.Error("expected result to be nil when access token generation fails")
@@ -739,9 +763,20 @@ func TestAuthServiceImpl_RefreshToken(t *testing.T) {
 			// Setup test-specific mock behavior
 			tt.setupMocks(userRepo, sessionRepo, tokenSvc)
 
+			// Create Redis client for testing
+			mr, err := miniredis.Run()
+			if err != nil {
+				t.Fatalf("failed to start miniredis: %v", err)
+			}
+			defer mr.Close()
+
+			redisClient := redis.NewClient(&redis.Options{
+				Addr: mr.Addr(),
+			})
+
 			// Create service with successful validation
 			validationSvc := createSuccessfulValidationMock(t)
-			authService := createAuthServiceForTest(t, userRepo, sessionRepo, nil, tokenSvc, nil, nil, nil, validationSvc)
+			authService := createAuthServiceForTest(t, userRepo, sessionRepo, nil, tokenSvc, nil, nil, redisClient, validationSvc)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -822,15 +857,26 @@ func TestAuthServiceImpl_Logout(t *testing.T) {
 			// Setup test-specific mock behavior
 			tt.setupMocks(sessionRepo)
 
+			// Create Redis client for testing
+			mr, err := miniredis.Run()
+			if err != nil {
+				t.Fatalf("failed to start miniredis: %v", err)
+			}
+			defer mr.Close()
+
+			redisClient := redis.NewClient(&redis.Options{
+				Addr: mr.Addr(),
+			})
+
 			// Create service with successful validation
 			validationSvc := createSuccessfulValidationMock(t)
-			authService := createAuthServiceForTest(t, nil, sessionRepo, nil, nil, nil, nil, nil, validationSvc)
+			authService := createAuthServiceForTest(t, nil, sessionRepo, nil, nil, nil, nil, redisClient, validationSvc)
 
 			// Create context
 			ctx := createTestContext(t)
 
 			// Execute test
-			err := authService.Logout(ctx, tt.sessionID)
+			err = authService.Logout(ctx, tt.sessionID)
 
 			// Validate error
 			if tt.expectedError != nil {
@@ -907,9 +953,20 @@ func TestAuthServiceImpl_GetUserProfile(t *testing.T) {
 			// Setup test-specific mock behavior
 			tt.setupMocks(userRepo)
 
+			// Create Redis client for testing
+			mr, err := miniredis.Run()
+			if err != nil {
+				t.Fatalf("failed to start miniredis: %v", err)
+			}
+			defer mr.Close()
+
+			redisClient := redis.NewClient(&redis.Options{
+				Addr: mr.Addr(),
+			})
+
 			// Create service with successful validation
 			validationSvc := createSuccessfulValidationMock(t)
-			authService := createAuthServiceForTest(t, userRepo, nil, nil, nil, nil, nil, nil, validationSvc)
+			authService := createAuthServiceForTest(t, userRepo, nil, nil, nil, nil, nil, redisClient, validationSvc)
 
 			// Create context
 			ctx := createTestContext(t)
@@ -963,9 +1020,20 @@ func TestAuthServiceImpl_CompleteAuthFlow(t *testing.T) {
 	tokenSvc := mocks.NewMockTokenService()
 	otpSvc := mocks.NewMockOTPService()
 
+	// Create Redis client for testing
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
 	// Create service with successful validation
 	validationSvc := createSuccessfulValidationMock(t)
-	authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, nil, nil, validationSvc)
+	authService := createAuthServiceForTest(t, userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, nil, redisClient, validationSvc)
 
 	// Test data
 	email := "integration@test.com"

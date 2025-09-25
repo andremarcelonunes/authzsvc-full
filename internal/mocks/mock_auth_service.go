@@ -14,6 +14,7 @@ type MockAuthService struct {
 	RefreshTokenFunc   func(ctx context.Context, refreshToken string) (*domain.AuthResult, error)
 	LogoutFunc         func(ctx context.Context, sessionID string) error
 	GetUserProfileFunc func(ctx context.Context, userID uint) (*domain.User, error)
+	AuthenticateUserFunc func(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) // CB-194
 }
 
 // NewMockAuthService creates a new MockAuthService with default behaviors
@@ -106,6 +107,34 @@ func (m *MockAuthService) GetUserProfile(ctx context.Context, userID uint) (*dom
 		PhoneVerified: true,
 		CreatedAt:     time.Now().Add(-24 * time.Hour),
 		UpdatedAt:     time.Now(),
+	}, nil
+}
+
+// AuthenticateUser implements domain.AuthService for CB-194
+func (m *MockAuthService) AuthenticateUser(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
+	if m.AuthenticateUserFunc != nil {
+		return m.AuthenticateUserFunc(ctx, request)
+	}
+	// Default behavior: return mock auth result
+	return &domain.AuthResult{
+		User: &domain.User{
+			ID:            1,
+			Email:         "test@example.com",
+			Phone:         "+1234567890",
+			Role:          "user",
+			IsActive:      true,
+			PhoneVerified: true,
+		},
+		AccessToken:  "mock_access_token",
+		RefreshToken: "mock_refresh_token",
+		SessionID:    "mock_session_id",
+		ExpiresIn:    900,
+		AuthenticationContext: &domain.AuthenticationContext{
+			Method:              domain.IdentifierTypeEmail,
+			OriginalIdentifier:  request.Email,
+			NormalizedIdentifier: request.Email,
+			AuthenticatedAt:     time.Now(),
+		},
 	}, nil
 }
 

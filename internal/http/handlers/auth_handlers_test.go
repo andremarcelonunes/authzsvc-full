@@ -390,7 +390,7 @@ func TestAuthHandlers_VerifyOTP(t *testing.T) {
 			tt.setupMocks(mockOTPSvc, mockUserRepo)
 
 			// Create handler
-			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo)
+			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
 
 			// Create test request
 			reqBody, _ := json.Marshal(tt.requestBody)
@@ -556,7 +556,7 @@ func TestAuthHandlers_SendOTP(t *testing.T) {
 			tt.setupMocks(mockOTPSvc, mockUserRepo)
 
 			// Create handler
-			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo)
+			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
 
 			// Create test request
 			reqBody, _ := json.Marshal(tt.requestBody)
@@ -744,7 +744,7 @@ func TestAuthHandlers_Refresh(t *testing.T) {
 			tt.setupMocks(mockAuthSvc)
 
 			// Create handler
-			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo)
+			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
 
 			// Create test request
 			reqBody, _ := json.Marshal(tt.requestBody)
@@ -913,7 +913,7 @@ func TestAuthHandlers_Me(t *testing.T) {
 			tt.setupMocks(mockAuthSvc)
 
 			// Create handler
-			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo)
+			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
 
 			// Create test request
 			req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
@@ -1037,7 +1037,7 @@ func TestAuthHandlers_Logout(t *testing.T) {
 			tt.setupMocks(mockAuthSvc)
 
 			// Create handler
-			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo)
+			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
 
 			// Create test request
 			req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
@@ -1086,7 +1086,7 @@ func TestAuthHandlers_NewAuthHandlers(t *testing.T) {
 	mockOTPSvc := mocks.NewMockOTPService()
 	mockUserRepo := mocks.NewMockUserRepository()
 
-	handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo)
+	handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
 
 	if handler == nil {
 		t.Fatal("NewAuthHandlers returned nil")
@@ -1244,7 +1244,7 @@ func TestAuthHandlers_Register(t *testing.T) {
 			tt.setupMocks(mockAuthSvc)
 
 			// Create handler
-			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo)
+			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
 
 			// Create test request
 			reqBody, _ := json.Marshal(tt.requestBody)
@@ -1443,7 +1443,7 @@ func TestAuthHandlers_Login(t *testing.T) {
 			tt.setupMocks(mockAuthSvc)
 
 			// Create handler
-			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo)
+			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
 
 			// Create test request
 			reqBody, _ := json.Marshal(tt.requestBody)
