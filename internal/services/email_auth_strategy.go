@@ -60,6 +60,11 @@ func (s *EmailAuthStrategy) Authenticate(ctx context.Context, identifier, passwo
 		return nil, domain.ErrInvalidCredentials
 	}
 
+	// Check if phone is verified (required for all users)
+	if !user.PhoneVerified {
+		return nil, domain.ErrPhoneNotVerified
+	}
+
 	return user, nil
 }
 

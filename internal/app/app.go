@@ -266,7 +266,7 @@ func Run(cfg *config.Config) error {
 	}
 
 	// Initialize handlers
-	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo)
+	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo, tokenSvc, sessionRepo)
 	polH := &handlers.PolicyHandlers{E: cas.E}
 	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E)
 	docsH := handlers.NewSwaggerDocsHandler()

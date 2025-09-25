@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,17 +15,21 @@ import (
 
 // AuthHandlers handles authentication HTTP requests using clean architecture
 type AuthHandlers struct {
-	authSvc  domain.AuthService
-	otpSvc   domain.OTPService
-	userRepo domain.UserRepository
+	authSvc     domain.AuthService
+	otpSvc      domain.OTPService
+	userRepo    domain.UserRepository
+	tokenSvc    domain.TokenService
+	sessionRepo domain.SessionRepository
 }
 
 // NewAuthHandlers creates new auth handlers
-func NewAuthHandlers(authSvc domain.AuthService, otpSvc domain.OTPService, userRepo domain.UserRepository) *AuthHandlers {
+func NewAuthHandlers(authSvc domain.AuthService, otpSvc domain.OTPService, userRepo domain.UserRepository, tokenSvc domain.TokenService, sessionRepo domain.SessionRepository) *AuthHandlers {
 	return &AuthHandlers{
-		authSvc:  authSvc,
-		otpSvc:   otpSvc,
-		userRepo: userRepo,
+		authSvc:     authSvc,
+		otpSvc:      otpSvc,
+		userRepo:    userRepo,
+		tokenSvc:    tokenSvc,
+		sessionRepo: sessionRepo,
 	}
 }
 
@@ -410,6 +415,123 @@ func (h *AuthHandlers) Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
 			"message": "Logged out successfully",
+		},
+	})
+}
+
+// VerifyTokenResponse represents the response for token verification
+type VerifyTokenResponse struct {
+	Valid     bool   `json:"valid"`
+	TokenType string `json:"token_type,omitempty"`
+	User      *struct {
+		ID        uint   `json:"id"`
+		Role      string `json:"role"`
+		SessionID string `json:"session_id"`
+		IssuedAt  int64  `json:"issued_at"`
+		ExpiresAt int64  `json:"expires_at"`
+	} `json:"user,omitempty"`
+	Error     string `json:"error,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+// VerifyToken handles token verification for external services
+func (h *AuthHandlers) VerifyToken(c *gin.Context) {
+	// Get Authorization header
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"valid":      false,
+			"error":      "Authorization header required",
+			"error_code": "MISSING_AUTHORIZATION_HEADER",
+		})
+		return
+	}
+
+	// Check Bearer token format
+	tokenParts := strings.SplitN(authHeader, " ", 2)
+	if len(tokenParts) != 2 || tokenParts[0] != "Bearer" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"valid":      false,
+			"error":      "Invalid authorization header format",
+			"error_code": "INVALID_AUTHORIZATION_FORMAT",
+		})
+		return
+	}
+
+	token := tokenParts[1]
+
+	// Validate token
+	claims, err := h.tokenSvc.ValidateAccessToken(token)
+	if err != nil {
+		var errorCode string
+		var errorMessage string
+
+		switch {
+		case errors.Is(err, domain.ErrTokenExpired):
+			errorCode = "TOKEN_EXPIRED"
+			errorMessage = "Token expired"
+		case errors.Is(err, domain.ErrTokenMalformed):
+			errorCode = "TOKEN_MALFORMED"
+			errorMessage = "Token malformed"
+		case errors.Is(err, domain.ErrTokenInvalid):
+			errorCode = "TOKEN_INVALID"
+			errorMessage = "Token invalid"
+		default:
+			errorCode = "TOKEN_VALIDATION_FAILED"
+			errorMessage = "Token validation failed"
+		}
+
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"valid":      false,
+			"error":      errorMessage,
+			"error_code": errorCode,
+		})
+		return
+	}
+
+	// Verify session exists in Redis if session ID is present
+	if claims.SessionID != "" {
+		session, err := h.sessionRepo.FindByID(c.Request.Context(), claims.SessionID)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"valid":      false,
+				"error":      "Session invalid or expired",
+				"error_code": "SESSION_INVALID",
+			})
+			return
+		}
+
+		// Ensure session belongs to the same user
+		if session.UserID != claims.UserID {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"valid":      false,
+				"error":      "Session user mismatch",
+				"error_code": "SESSION_USER_MISMATCH",
+			})
+			return
+		}
+
+		// Check if session is expired
+		if time.Now().After(session.ExpiresAt) {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"valid":      false,
+				"error":      "Session expired",
+				"error_code": "SESSION_EXPIRED",
+			})
+			return
+		}
+	}
+
+	// Token and session are valid, return success response
+	c.JSON(http.StatusOK, gin.H{
+		"valid":      true,
+		"token_type": "access_token",
+		"user": gin.H{
+			"id":         claims.UserID,
+			"role":       claims.Role,
+			"session_id": claims.SessionID,
+			"issued_at":  claims.IssuedAt,
+			"expires_at": claims.ExpiresAt,
 		},
 	})
 }
