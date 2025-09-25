@@ -101,6 +101,39 @@ type PhoneVerificationPolicy interface {
 	ShouldEnforceVerification(user *User) bool
 }
 
+// IdentifierType represents the type of authentication identifier
+type IdentifierType string
+
+const (
+	IdentifierTypeEmail IdentifierType = "email"
+	IdentifierTypePhone IdentifierType = "phone"
+)
+
+// IdentifierResolutionService handles smart detection and resolution of authentication identifiers
+type IdentifierResolutionService interface {
+	// ResolveIdentifier detects whether an identifier is email or phone and normalizes it
+	ResolveIdentifier(ctx context.Context, identifier string) (*IdentifierResolution, error)
+	
+	// NormalizePhone converts phone number to E.164 format for consistent storage/lookup
+	NormalizePhone(ctx context.Context, phone string, countryCode string) (string, error)
+	
+	// NormalizeEmail converts email to lowercase and trims whitespace
+	NormalizeEmail(ctx context.Context, email string) (string, error)
+	
+	// ValidateIdentifier performs format validation on the identifier
+	ValidateIdentifier(ctx context.Context, identifier string, identifierType IdentifierType) error
+}
+
+// IdentifierResolution contains the resolved identifier information
+type IdentifierResolution struct {
+	Type              IdentifierType `json:"type"`
+	OriginalValue     string         `json:"original_value"`
+	NormalizedValue   string         `json:"normalized_value"`
+	CountryCode       string         `json:"country_code,omitempty"`
+	IsValid           bool           `json:"is_valid"`
+	ValidationMessage string         `json:"validation_message,omitempty"`
+}
+
 // RequestValidationService orchestrates comprehensive request validation
 type RequestValidationService interface {
 	// Main validation pipeline

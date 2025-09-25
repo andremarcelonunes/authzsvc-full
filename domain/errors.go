@@ -58,6 +58,16 @@ var (
 	ErrInvalidUserID        = errors.New("invalid user ID format")
 )
 
+// Identifier resolution errors
+var (
+	ErrInvalidIdentifier     = errors.New("identifier format is invalid")
+	ErrIdentifierTypeUnknown = errors.New("unable to determine identifier type")
+	ErrPhoneFormatInvalid    = errors.New("phone number format is invalid")
+	ErrEmailFormatInvalid    = errors.New("email format is invalid")
+	ErrCountryCodeRequired   = errors.New("country code is required for phone normalization")
+	ErrPhoneNormalizationFailed = errors.New("phone number normalization failed")
+)
+
 // Security validation errors
 var (
 	ErrSecurityViolation    = errors.New("security violation detected")
