@@ -1,0 +1,86 @@
+# Authorization policies for the gateway (Envoy -> AuthzSvc /external/authz/check).
+# Columns: role, path, method, rule
+#   rule "*"                                   -> the role is enough
+#   rule "path.<name>==token.backend_user_id"  -> only the owner: <name> is the :param of this policy's path,
+#                                                 compared with the caller's backend user id (the AuthzSvc user id
+#                                                 from the token, translated through the backend's internal API)
+#   rule "body.<field>==..." / "query.<name>==..." -> same comparison on a JSON body field or a query parameter
+# Relationship checks (attendant <-> client's team, consent) are NOT here: the services enforce them.
+# Routes not listed are denied. /api/v1/internal/* is never exposed through the gateway.
+
+# ---- backendEldery: users -------------------------------------------------------------------------
+# A person who registered in AuthzSvc through the app (role client) creates their own subscriber profile.
+# The backend must bind the new profile to the caller identity supplied by the gateway, never to the body.
+role_client,    /api/v1/users/register/subscriber/, POST, *
+role_attendant, /api/v1/users/register/subscriber/, POST, *
+role_admin,     /api/v1/users/register/subscriber/, POST, *
+role_attendant, /api/v1/users/search/, POST, *
+role_admin,     /api/v1/users/search/, POST, *
+role_client,    /api/v1/users/user/:user_id, GET, path.user_id==token.backend_user_id
+role_contact,   /api/v1/users/user/:user_id, GET, path.user_id==token.backend_user_id
+role_attendant, /api/v1/users/user/:user_id, GET, *
+role_admin,     /api/v1/users/user/:user_id, GET, *
+role_client,    /api/v1/users/update/:user_id, (PUT|PATCH), path.user_id==token.backend_user_id
+role_contact,   /api/v1/users/update/:user_id, (PUT|PATCH), path.user_id==token.backend_user_id
+role_admin,     /api/v1/users/update/:user_id, (PUT|PATCH), *
+role_client,    /api/v1/users/associate/assisted/, POST, body.subscriber_id==token.backend_user_id
+role_admin,     /api/v1/users/associate/assisted/, POST, *
+role_client,    /api/v1/users/subscribers/:subscriber_id/assisted, GET, path.subscriber_id==token.backend_user_id
+role_attendant, /api/v1/users/subscribers/:subscriber_id/assisted, GET, *
+role_admin,     /api/v1/users/subscribers/:subscriber_id/assisted, GET, *
+role_client,    /api/v1/users/register/contact/, POST, *
+role_admin,     /api/v1/users/register/contact/, POST, *
+role_client,    /api/v1/users/associate/contact/, POST, body.client_id==token.backend_user_id
+role_admin,     /api/v1/users/associate/contact/, POST, *
+role_client,    /api/v1/users/client/:client_id/contacts, GET, path.client_id==token.backend_user_id
+role_attendant, /api/v1/users/client/:client_id/contacts, GET, *
+role_admin,     /api/v1/users/client/:client_id/contacts, GET, *
+role_contact,   /api/v1/users/contact/:contact_id/clients, GET, path.contact_id==token.backend_user_id
+role_admin,     /api/v1/users/contact/:contact_id/clients, GET, *
+role_client,    /api/v1/users/contact/association/, DELETE, query.client_id==token.backend_user_id
+role_admin,     /api/v1/users/contact/association/, DELETE, *
+
+# ---- backendEldery: attendants and teams ----------------------------------------------------------
+role_admin,     /api/v1/attendants/register/, POST, *
+role_attendant, /api/v1/attendants/:attendant_id, GET, path.attendant_id==token.backend_user_id
+role_admin,     /api/v1/attendants/:attendant_id, GET, *
+role_attendant, /api/v1/attendants/:user_id, (PUT|PATCH), path.user_id==token.backend_user_id
+role_admin,     /api/v1/attendants/:user_id, (PUT|PATCH), *
+role_admin,     /api/v1/attendants/team/association/, DELETE, *
+role_attendant, /api/v1/attendants/:attendant_id/clients, GET, path.attendant_id==token.backend_user_id
+role_admin,     /api/v1/attendants/:attendant_id/clients, GET, *
+role_attendant, /api/v1/attendant/search/, POST, *
+role_admin,     /api/v1/attendant/search/, POST, *
+role_attendant, /api/v1/teams/:team_id/attendants, GET, *
+role_admin,     /api/v1/teams/:team_id/attendants, GET, *
+role_attendant, /api/v1/teams/by-name/:name, GET, *
+role_admin,     /api/v1/teams/by-name/:name, GET, *
+
+# ---- medical-service: records (consent is checked inside the service) ----------------------------
+role_attendant, /api/v1/medical-records, POST, *
+role_attendant, /api/v1/medical-records/user/:user_id, GET, *
+role_attendant, /api/v1/medical-records/user/:user_id/history, GET, *
+role_attendant, /api/v1/medical-records/:record_id, (PUT|DELETE), *
+role_attendant, /api/v1/medical-records/:record_id/versions/:old_version/compare/:new_version, GET, *
+
+# ---- medical-service: consent ---------------------------------------------------------------------
+role_client,    /consent/grant, POST, body.user_id==token.backend_user_id
+role_client,    /consent/:consent_id/user/:user_id, DELETE, path.user_id==token.backend_user_id
+role_client,    /consent/user/:user_id, GET, path.user_id==token.backend_user_id
+role_admin,     /consent/user/:user_id, GET, *
+role_client,    /consent/user/:user_id/summary, GET, path.user_id==token.backend_user_id
+role_admin,     /consent/user/:user_id/summary, GET, *
+role_client,    /consent/user/:user_id/data-access, GET, path.user_id==token.backend_user_id
+role_admin,     /consent/user/:user_id/data-access, GET, *
+role_client,    /consent/status/user/:user_id/consultant/:team_id, GET, path.user_id==token.backend_user_id
+role_attendant, /consent/status/user/:user_id/consultant/:team_id, GET, *
+role_admin,     /consent/status/user/:user_id/consultant/:team_id, GET, *
+role_attendant, /consent/consultant/:consultant_id, GET, path.consultant_id==token.backend_user_id
+role_admin,     /consent/consultant/:consultant_id, GET, *
+role_attendant, /consent/validate, POST, *
+role_admin,     /consent/validate, POST, *
+role_admin,     /consent/cleanup-expired, POST, *
+
+# ---- medical-service: operations ------------------------------------------------------------------
+role_admin,     /api/v1/vault/*, (GET|POST), *
+role_admin,     /admin/circuit-breakers/*, (GET|POST), *

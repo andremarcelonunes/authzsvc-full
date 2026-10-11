@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/you/authzsvc/domain"
 	"github.com/you/authzsvc/internal/config"
 	httpx "github.com/you/authzsvc/internal/http"
 	"github.com/you/authzsvc/internal/http/handlers"
 	"github.com/you/authzsvc/internal/http/middleware"
 	"github.com/you/authzsvc/internal/infrastructure/auth"
 	"github.com/you/authzsvc/internal/infrastructure/database"
+	"github.com/you/authzsvc/internal/infrastructure/identity"
 	"github.com/you/authzsvc/internal/infrastructure/notifications"
 	"github.com/you/authzsvc/internal/infrastructure/repositories"
 	"github.com/you/authzsvc/internal/infrastructure/validation"
@@ -274,7 +276,17 @@ func Run(cfg *config.Config) error {
 	// Initialize handlers
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo, tokenSvc, sessionRepo)
 	polH := &handlers.PolicyHandlers{E: cas.E}
-	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E)
+	// Backend id translation for token.backend_user_id; nil (untyped) when not configured.
+	var backendIdentity domain.BackendIdentityResolver
+	if cfg.IdentityBackend.URL != "" {
+		backendIdentity = identity.NewCachedResolver(
+			identity.NewHTTPResolver(cfg.IdentityBackend.URL, cfg.IdentityBackend.APIKey, cfg.IdentityBackend.Timeout),
+			rdb,
+		)
+	} else {
+		log.Println("identity backend not configured (IDENTITY_BACKEND_URL empty): rules using token.backend_user_id will fail closed")
+	}
+	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E, backendIdentity)
 	docsH := handlers.NewSwaggerDocsHandler()
 	passwordChangeH := handlers.NewPasswordChangeHandlers(passwordChangeSvc)
 	userDeletionH := handlers.NewUserDeletionHandlers(userDeletionSvc, authSvc)

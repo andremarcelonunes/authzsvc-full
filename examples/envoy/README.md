@@ -89,12 +89,12 @@ External Auth Service (authzsvc:8080/external/authz/check/<original path>)
 `ANY /external/authz/check/*path` follows Envoy's HTTP ext_authz protocol:
 
 - The request being authorized is the incoming request itself: method = HTTP method, path = the part after `/external/authz/check` (as decoded by Gin; trailing slash preserved; `/external/authz/check/` authorizes `/`), query = raw query string, headers = request headers, body = request body. HEAD and OPTIONS are authorized like any other method.
-- Decision by status: `200` allow (empty body, identity in the response headers `x-user-id` and `x-user-role`, taken only from the validated token), `401` bad/missing token or session, `403` denied by policy or field rule, `500` internal failure. Non-200 bodies are `{"error": "..."}`.
+- Decision by status: `200` allow (empty body, identity in the response headers `x-user-id`, `x-user-role` and `x-backend-user-id`, taken only from the validated token), `401` bad/missing token or session, `403` denied by policy or field rule, `500` internal failure. Non-200 bodies are `{"error": "..."}`.
 - Configure Envoy with `path_prefix: "/external/authz/check"`. Authorization logic is identical to the JSON endpoint.
 
 The older `POST /external/authz` (custom JSON request/response) is unchanged but is NOT what Envoy's HTTP filter speaks.
 
-Note: the authorization response headers overwrite any client-supplied `x-user-id` / `x-user-role` for authorized requests; routes that bypass ext_authz must not trust those headers.
+Note: the authorization response headers overwrite any client-supplied `x-user-id` / `x-user-role` / `x-backend-user-id` for authorized requests; routes that bypass ext_authz must not trust those headers.
 
 ## Configuration Details
 
@@ -141,6 +141,7 @@ When authorization succeeds, these headers are added:
 
 - `x-user-id`: User ID from JWT token
 - `x-user-role`: User role from JWT token
+- `x-backend-user-id`: The caller's user id in the backend services (translated through `IDENTITY_BACKEND_URL`). Always present on allowed requests; empty when the user is not mapped or the lookup is unavailable, so list it in `allowed_upstream_headers` for Envoy to overwrite any client-supplied value.
 
 ## Testing the Integration
 
@@ -317,6 +318,7 @@ authorization_response:
     patterns:
     - exact: "x-user-id"
     - exact: "x-user-role"
+    - exact: "x-backend-user-id"
     - exact: "x-user-permissions"  # Custom header
     - prefix: "x-auth-"
 ```

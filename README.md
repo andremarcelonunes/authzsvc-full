@@ -2808,6 +2808,7 @@ http_filters:
             patterns:
               - exact: x-user-id
               - exact: x-user-role
+              - exact: x-backend-user-id
               - exact: x-session-id
         path_prefix: /external/authz
 

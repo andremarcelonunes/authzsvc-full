@@ -71,8 +71,8 @@ func TestExternalAuthzFieldValidation(t *testing.T) {
 			setupPolicies: func(enforcer *casbin.Enforcer) {
 				enforcer.AddPolicy("role_user", "/api/data", "GET", "query.user_id==token.user_id")
 			},
-			expectedStatus: http.StatusInternalServerError,
-			expectedError:  "query parameter 'user_id' not found",
+			expectedStatus: http.StatusForbidden,
+			expectedError:  "Field validation failed",
 			description:    "Should fail when required query parameter is missing",
 		},
 
@@ -138,8 +138,8 @@ func TestExternalAuthzFieldValidation(t *testing.T) {
 			setupPolicies: func(enforcer *casbin.Enforcer) {
 				enforcer.AddPolicy("role_user", "/api/posts", "POST", "body.author_id==token.user_id")
 			},
-			expectedStatus: http.StatusInternalServerError,
-			expectedError:  "body field 'author_id' not found",
+			expectedStatus: http.StatusForbidden,
+			expectedError:  "Field validation failed",
 			description:    "Should fail when required body field is missing",
 		},
 		{
@@ -151,8 +151,8 @@ func TestExternalAuthzFieldValidation(t *testing.T) {
 			setupPolicies: func(enforcer *casbin.Enforcer) {
 				enforcer.AddPolicy("role_user", "/api/posts", "POST", "body.author_id==token.user_id")
 			},
-			expectedStatus: http.StatusInternalServerError,
-			expectedError:  "failed to parse JSON body",
+			expectedStatus: http.StatusForbidden,
+			expectedError:  "Field validation failed",
 			description:    "Should fail gracefully with invalid JSON body",
 		},
 
@@ -206,8 +206,8 @@ func TestExternalAuthzFieldValidation(t *testing.T) {
 			setupPolicies: func(enforcer *casbin.Enforcer) {
 				enforcer.AddPolicy("role_user", "/api/upload", "POST", "header.x-user-id==token.user_id")
 			},
-			expectedStatus: http.StatusInternalServerError,
-			expectedError:  "header 'x-user-id' not found",
+			expectedStatus: http.StatusForbidden,
+			expectedError:  "Field validation failed",
 			description:    "Should fail when required header is missing",
 		},
 
@@ -309,8 +309,8 @@ func TestExternalAuthzFieldValidation(t *testing.T) {
 			setupPolicies: func(enforcer *casbin.Enforcer) {
 				enforcer.AddPolicy("role_user", "/api/data", "GET", "query.user_id!=token.user_id")
 			},
-			expectedStatus: http.StatusInternalServerError,
-			expectedError:  "unsupported condition format",
+			expectedStatus: http.StatusForbidden,
+			expectedError:  "Field validation failed",
 			description:    "Should fail with unsupported operator (!= instead of ==)",
 		},
 		{
@@ -321,8 +321,8 @@ func TestExternalAuthzFieldValidation(t *testing.T) {
 			setupPolicies: func(enforcer *casbin.Enforcer) {
 				enforcer.AddPolicy("role_user", "/api/data", "GET", "invalid_condition_format")
 			},
-			expectedStatus: http.StatusInternalServerError,
-			expectedError:  "unsupported condition format",
+			expectedStatus: http.StatusForbidden,
+			expectedError:  "Field validation failed",
 			description:    "Should fail with malformed validation condition",
 		},
 	}
@@ -355,7 +355,7 @@ func TestExternalAuthzFieldValidation(t *testing.T) {
 			tt.setupPolicies(enforcer)
 
 			// Create handler
-			handler := NewExternalAuthzHandlers(tokenSvc, sessionRepo, enforcer)
+			handler := NewExternalAuthzHandlers(tokenSvc, sessionRepo, enforcer, nil)
 
 			// Setup Gin context
 			gin.SetMode(gin.TestMode)

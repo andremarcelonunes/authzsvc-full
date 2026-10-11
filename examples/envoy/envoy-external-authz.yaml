@@ -10,7 +10,7 @@
 # Validate with:
 #   envoy --mode validate -c envoy-external-authz.yaml
 #
-# SECURITY: for authorized requests, x-user-id / x-user-role set by authzsvc
+# SECURITY: for authorized requests, x-user-id / x-user-role / x-backend-user-id set by authzsvc
 # OVERWRITE any client-supplied values of the same name before the request is
 # forwarded upstream. Routes that bypass ext_authz (none in this example) do not
 # get this protection and the backend must not trust those headers there.
@@ -58,6 +58,7 @@ static_resources:
                     patterns:
                     - exact: "x-user-id"
                     - exact: "x-user-role"
+                    - exact: "x-backend-user-id"
               # Optional: lets field rules such as body.author_id==token.user_id work.
               with_request_body:
                 max_request_bytes: 8192

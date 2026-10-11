@@ -45,7 +45,7 @@ func newCheckFixture(t *testing.T) *checkFixture {
 	f.sessions.FindByIDFunc = func(ctx context.Context, id string) (*domain.Session, error) {
 		return &domain.Session{ID: id, UserID: 123}, nil
 	}
-	f.h = NewExternalAuthzHandlers(f.tokenSvc, f.sessions, f.enforcer)
+	f.h = NewExternalAuthzHandlers(f.tokenSvc, f.sessions, f.enforcer, nil)
 	f.router = gin.New()
 	f.router.Any("/external/authz/check/*path", f.h.Check)
 	return f
@@ -212,15 +212,15 @@ func TestCheck_FieldRuleUsesQueryHeaderAndBody(t *testing.T) {
 	if w := f.do("POST", "/external/authz/check/api/posts", bearer, `{"author_id":5}`); w.Code != 403 {
 		t.Errorf("body other: %d", w.Code)
 	}
-	// Missing body: extraction error => internal failure, no details in body.
+	// Missing body: the condition cannot be evaluated => policy not satisfied => 403 (was 500).
 	w := f.do("POST", "/external/authz/check/api/posts", bearer, "")
-	if w.Code != 500 {
+	if w.Code != 403 {
 		t.Fatalf("no body: %d", w.Code)
 	}
 	if strings.Contains(w.Body.String(), "not found") || strings.Contains(w.Body.String(), "details") {
-		t.Errorf("500 body leaks internals: %s", w.Body.String())
+		t.Errorf("403 body leaks internals: %s", w.Body.String())
 	}
-	if errorBody(t, w) != "Field validation failed" {
+	if !strings.Contains(errorBody(t, w), "Field validation failed") {
 		t.Errorf("body %s", w.Body.String())
 	}
 }
@@ -300,8 +300,9 @@ func TestCheck_BuildsEnvoyRequestFromHTTPRequest(t *testing.T) {
 
 func TestCheck_InternalFailure_500_NoDetails(t *testing.T) {
 	f := newCheckFixture(t)
-	f.enforcer.AddPolicy("role_user", "/bad", "GET", "path.id>token.user_id") // unsupported rule
-	w := f.do("GET", "/external/authz/check/bad", bearer, "")
+	// An internal failure: the rule needs the backend id but no resolver is configured.
+	f.enforcer.AddPolicy("role_user", "/bad/:id", "GET", "path.id==token.backend_user_id")
+	w := f.do("GET", "/external/authz/check/bad/5", bearer, "")
 	if w.Code != 500 {
 		t.Fatalf("status %d", w.Code)
 	}
@@ -316,10 +317,10 @@ func TestCheck_InternalFailure_500_NoDetails(t *testing.T) {
 func TestCheck_JSONEndpointStillReportsDetailsOn500(t *testing.T) {
 	// The JSON endpoint keeps its historical response (including details).
 	f := newCheckFixture(t)
-	f.enforcer.AddPolicy("role_user", "/bad", "GET", "path.id>token.user_id")
+	f.enforcer.AddPolicy("role_user", "/bad/:id", "GET", "path.id==token.backend_user_id")
 	r := gin.New()
 	r.POST("/external/authz", f.h.Authorize)
-	payload := `{"attributes":{"request":{"http":{"method":"GET","path":"/bad","headers":{"authorization":"Bearer valid_token"}}}}}`
+	payload := `{"attributes":{"request":{"http":{"method":"GET","path":"/bad/5","headers":{"authorization":"Bearer valid_token"}}}}}`
 	req := httptest.NewRequest("POST", "/external/authz", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
