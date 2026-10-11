@@ -49,7 +49,7 @@ m = r.sub == p.sub && r.obj == p.obj && r.act == p.act
 	sessions.FindByIDFunc = func(_ context.Context, id string) (*domain.Session, error) {
 		return &domain.Session{ID: id, UserID: 7}, nil
 	}
-	eh := handlers.NewExternalAuthzHandlers(tokenSvc, sessions, enforcer)
+	eh := handlers.NewExternalAuthzHandlers(tokenSvc, sessions, enforcer, nil)
 
 	var r *gin.Engine
 	func() {

@@ -48,12 +48,19 @@ type ServerMetrics struct {
 // NewTestServer creates a new test server instance for E2E testing
 func NewTestServer(t *testing.T, suite *TestSuite) *TestServer {
 	t.Helper()
+	return NewTestServerWithResolver(t, suite, nil)
+}
+
+// NewTestServerWithResolver is NewTestServer with a backend identity resolver wired into the
+// external authz handlers (nil = not configured).
+func NewTestServerWithResolver(t *testing.T, suite *TestSuite, resolver domain.BackendIdentityResolver) *TestServer {
+	t.Helper()
 
 	// Set Gin to test mode
 	gin.SetMode(gin.TestMode)
 
 	// Create router with test dependencies
-	router, err := createTestRouter(suite)
+	router, err := createTestRouter(suite, resolver)
 	if err != nil {
 		t.Fatalf("Failed to create test router: %v", err)
 	}
@@ -90,7 +97,7 @@ func NewTestServer(t *testing.T, suite *TestSuite) *TestServer {
 }
 
 // createTestRouter initializes the router with test dependencies
-func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
+func createTestRouter(suite *TestSuite, resolver domain.BackendIdentityResolver) (*gin.Engine, error) {
 	// Clean up old format Casbin policies from database first
 	// This prevents "invalid policy rule size" errors from old 3-column policies
 	suite.DB.Exec("DELETE FROM casbin_rule")
@@ -170,7 +177,7 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 	// Initialize handlers
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo, tokenSvc, sessionRepo)
 	polH := &handlers.PolicyHandlers{E: cas.E}
-	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E)
+	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E, resolver)
 
 	// Initialize password change service and handlers
 	passwordChangeRepo := repositories.NewPasswordChangeRepository(suite.DB)

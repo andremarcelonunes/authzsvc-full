@@ -85,6 +85,25 @@ type BootstrapConfig struct {
 	ServiceAdmin BootstrapAccount `yaml:"service_admin"`
 }
 
+// IdentityBackendFileConfig is the optional "identity_backend" section: the backend's internal
+// API that translates an AuthzSvc user id into the backend user id (token.backend_user_id).
+type IdentityBackendFileConfig struct {
+	URL     string `yaml:"url"`
+	APIKey  string `yaml:"api_key"`
+	Timeout string `yaml:"timeout"`
+}
+
+// IdentityBackendConfig is the resolved identity backend configuration. An empty URL means
+// the resolver is not configured.
+type IdentityBackendConfig struct {
+	URL     string
+	APIKey  string
+	Timeout time.Duration
+}
+
+// DefaultIdentityBackendTimeout is used when no timeout is configured.
+const DefaultIdentityBackendTimeout = 2 * time.Second
+
 type ConfigFile struct {
 	App        AppConfig        `yaml:"app"`
 	Database   DatabaseConfig   `yaml:"database"`
@@ -95,6 +114,8 @@ type ConfigFile struct {
 	Casbin     CasbinConfig     `yaml:"casbin"`
 	Validation ValidationConfig `yaml:"validation"`
 	Bootstrap  BootstrapConfig  `yaml:"bootstrap"`
+
+	IdentityBackend IdentityBackendFileConfig `yaml:"identity_backend"`
 }
 
 type Config struct {
@@ -124,6 +145,9 @@ type Config struct {
 
 	// Bootstrap accounts (root / service admin) created at startup; environment overrides config file
 	Bootstrap BootstrapConfig
+
+	// IdentityBackend configures the backend id translation API; environment overrides config file
+	IdentityBackend IdentityBackendConfig
 }
 
 func env(k, def string) string {
@@ -177,6 +201,11 @@ func Load() (*Config, error) {
 	// Set up validation configuration with defaults for CB-182
 	validationConfig := setupValidationConfig(configFile.Validation)
 
+	identityBackend, err := loadIdentityBackendConfig(configFile.IdentityBackend)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		Port:             fmt.Sprintf("%d", configFile.App.Port),
 		DSN:              configFile.Database.DSN,
@@ -200,6 +229,7 @@ func Load() (*Config, error) {
 		UseSimpleCasbin:  env("USE_SIMPLE_CASBIN", "false") == "true",
 		ValidationConfig: validationConfig,
 		Bootstrap:        loadBootstrapConfig(configFile.Bootstrap),
+		IdentityBackend:  identityBackend,
 	}, nil
 }
 
@@ -218,6 +248,24 @@ func loadBootstrapConfig(fromFile BootstrapConfig) BootstrapConfig {
 			Password: env("SERVICE_ADMIN_PASSWORD", fromFile.ServiceAdmin.Password),
 		},
 	}
+}
+
+// loadIdentityBackendConfig applies the IDENTITY_BACKEND_URL, IDENTITY_BACKEND_API_KEY and
+// IDENTITY_BACKEND_TIMEOUT environment variables over the optional identity_backend section.
+func loadIdentityBackendConfig(fromFile IdentityBackendFileConfig) (IdentityBackendConfig, error) {
+	cfg := IdentityBackendConfig{
+		URL:     env("IDENTITY_BACKEND_URL", fromFile.URL),
+		APIKey:  env("IDENTITY_BACKEND_API_KEY", fromFile.APIKey),
+		Timeout: DefaultIdentityBackendTimeout,
+	}
+	if raw := env("IDENTITY_BACKEND_TIMEOUT", fromFile.Timeout); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return IdentityBackendConfig{}, fmt.Errorf("invalid identity backend timeout %q", raw)
+		}
+		cfg.Timeout = d
+	}
+	return cfg, nil
 }
 
 func loadConfigFile(path string) (*ConfigFile, error) {

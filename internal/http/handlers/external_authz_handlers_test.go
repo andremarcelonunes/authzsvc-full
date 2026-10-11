@@ -99,6 +99,7 @@ func TestExternalAuthzHandlers_Authorize(t *testing.T) {
 				"headers": map[string]interface{}{
 					"x-user-id":   "123",
 					"x-user-role": "user",
+					"x-backend-user-id": "",
 				},
 			},
 		},
@@ -371,6 +372,7 @@ func TestExternalAuthzHandlers_Authorize(t *testing.T) {
 				"headers": map[string]interface{}{
 					"x-user-id":   "123",
 					"x-user-role": "user",
+					"x-backend-user-id": "",
 				},
 			},
 		},
@@ -465,7 +467,7 @@ func TestExternalAuthzHandlers_Authorize(t *testing.T) {
 			tt.setupMocks(tokenSvc, sessionRepo, enforcer)
 			
 			// Create handler
-			handler := NewExternalAuthzHandlers(tokenSvc, sessionRepo, enforcer)
+			handler := NewExternalAuthzHandlers(tokenSvc, sessionRepo, enforcer, nil)
 			
 			// Setup Gin context
 			gin.SetMode(gin.TestMode)
