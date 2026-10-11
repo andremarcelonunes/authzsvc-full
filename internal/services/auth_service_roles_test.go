@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -259,5 +260,79 @@ func TestRegister_PublicRateLimitReturnsTypedError(t *testing.T) {
 	}
 	if *created != 2 {
 		t.Errorf("rate-limited registration must not create a user, created=%d", *created)
+	}
+}
+
+func newRealValidationAuthService(t *testing.T, validatorErr error) domain.AuthService {
+	t.Helper()
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mr.Close)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	userRepo := mocks.NewMockUserRepository()
+	business := NewBusinessValidationService(userRepo, BusinessValidationConfig{
+		PasswordPolicy:  PasswordPolicy{MinLength: 8, MaxLength: 128, RequireUppercase: true, RequireLowercase: true, RequireNumbers: true, MaxRepeatingChars: 3},
+		EmailValidation: EmailValidationConfig{MaxLength: 254},
+	})
+	security := mocks.NewMockSecurityValidationService()
+	if validatorErr != nil {
+		security.ScanForThreatsFunc = func(ctx context.Context, fields map[string]interface{}, c []domain.SecurityConstraint) (*domain.SecurityValidationResult, error) {
+			return nil, validatorErr
+		}
+	}
+	validator := NewRequestValidationService(security, business, mocks.NewMockRateLimitValidationService(), rdb, RequestValidationConfig{})
+	passwordSvc := mocks.NewMockPasswordService()
+	passwordSvc.HashFunc = func(p string) (string, error) { return "h", nil }
+	return NewAuthService(userRepo, mocks.NewMockSessionRepository(), passwordSvc, mocks.NewMockTokenService(),
+		mocks.NewMockOTPService(), mocks.NewMockPolicyService(), nil, validator, mocks.NewMockComprehensiveAuditService(),
+		mocks.NewMockIdentifierResolutionService(), mocks.NewMockEmailAuthenticationStrategy(), mocks.NewMockPhoneAuthenticationStrategy())
+}
+
+func TestCreateUserAccount_ValidationFailuresAreTyped(t *testing.T) {
+	cases := []struct {
+		name, email, phone, password string
+		code, field                  string
+	}{
+		{"weak password", "ok@example.com", "+5511900000001", "weak", "PASSWORD_TOO_SHORT", "password"},
+		{"invalid email", "not-an-email", "+5511900000001", "Passw0rd123", "EMAIL_FORMAT_INVALID", "email"},
+		{"invalid phone", "ok@example.com", "abc", "Passw0rd123", "PHONE_FORMAT_INVALID", "phone"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newRealValidationAuthService(t, nil)
+			creator := &domain.User{ID: 1, Role: domain.RoleAdmin}
+			for label, call := range map[string]func() error{
+				"public": func() error {
+					_, err := svc.Register(context.Background(), tc.email, tc.phone, tc.password, domain.RoleUser)
+					return err
+				},
+				"admin": func() error {
+					_, err := svc.CreateUserByAdmin(context.Background(), creator, tc.email, tc.phone, tc.password, domain.RoleUser)
+					return err
+				},
+			} {
+				err := call()
+				var verr *domain.RegistrationValidationError
+				if !errors.Is(err, domain.ErrRegistrationValidationFailed) || !errors.As(err, &verr) {
+					t.Fatalf("%s: expected typed validation error, got %v", label, err)
+				}
+				if verr.Code != tc.code || verr.Field != tc.field || verr.Message == "" {
+					t.Errorf("%s: got code=%q field=%q msg=%q, want %s/%s", label, verr.Code, verr.Field, verr.Message, tc.code, tc.field)
+				}
+				if tc.password != "" && strings.Contains(verr.Message, tc.password) {
+					t.Errorf("%s: message echoes the password", label)
+				}
+			}
+		})
+	}
+}
+
+func TestCreateUserAccount_ValidatorFailureIsNotAValidationError(t *testing.T) {
+	svc := newRealValidationAuthService(t, errors.New("scanner down"))
+	_, err := svc.Register(context.Background(), "ok@example.com", "+5511900000001", "Passw0rd123", domain.RoleUser)
+	if err == nil || errors.Is(err, domain.ErrRegistrationValidationFailed) {
+		t.Fatalf("expected a plain internal error, got %v", err)
 	}
 }

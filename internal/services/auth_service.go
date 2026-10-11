@@ -121,8 +121,8 @@ func (s *AuthServiceImpl) createUserAccount(ctx context.Context, endpoint string
 				case "RATE_LIMIT_EXCEEDED":
 					return nil, domain.ErrRegistrationRateLimited
 				default:
-					// Preserve specific validation error message
-					return nil, fmt.Errorf("registration validation failed: %s", firstError.Message)
+					// Client error: carry the validator's code, field and message
+					return nil, &domain.RegistrationValidationError{Code: firstError.Code, Field: firstError.Field, Message: firstError.Message}
 				}
 			}
 			return nil, domain.ErrValidationFailed

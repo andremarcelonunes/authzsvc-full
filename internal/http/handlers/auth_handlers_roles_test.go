@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -155,5 +156,70 @@ func TestAuthHandlers_Register_RateLimited429(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if msg, _ := resp["error"].(string); msg == "" {
 		t.Errorf("expected error body, got %v", resp)
+	}
+}
+
+func TestAuthHandlers_RegistrationValidationErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	valid := map[string]string{"email": "n@example.com", "phone": "+5511988887777", "password": "Secr3tInput!", "role": "user"}
+	tests := []struct {
+		name       string
+		err        error
+		status     int
+		wantError  string
+		wantCode   string
+		wantField  string
+		noEchoText string
+	}{
+		{"weak password", fmt.Errorf("wrap: %w", &domain.RegistrationValidationError{Code: "PASSWORD_TOO_SHORT", Field: "password", Message: "Password must be at least 8 characters long"}),
+			http.StatusBadRequest, "Password must be at least 8 characters long", "PASSWORD_TOO_SHORT", "password", ""},
+		{"no field", &domain.RegistrationValidationError{Code: "ROLE_INVALID", Message: "Invalid role specified"},
+			http.StatusBadRequest, "Invalid role specified", "ROLE_INVALID", "", ""},
+		{"security threat", &domain.RegistrationValidationError{Code: "SECURITY_THREAT", Field: "registration", Message: "Security threat detected: <script>Secr3tInput!"},
+			http.StatusBadRequest, securityRejectedMessage, "SECURITY_THREAT", "", "Secr3tInput!"},
+		{"plain error", errors.New("redis down"), http.StatusInternalServerError, "", "", "", ""},
+	}
+	routes := map[string]func(*AuthHandlers, *mocks.MockAuthService, error) *httptest.ResponseRecorder{
+		"register": func(h *AuthHandlers, m *mocks.MockAuthService, err error) *httptest.ResponseRecorder {
+			m.RegisterFunc = func(ctx context.Context, e, p, pw, r string) (*domain.User, error) { return nil, err }
+			raw, _ := json.Marshal(valid)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewBuffer(raw))
+			c.Request.Header.Set("Content-Type", "application/json")
+			h.Register(c)
+			return w
+		},
+		"admin": func(h *AuthHandlers, m *mocks.MockAuthService, err error) *httptest.ResponseRecorder {
+			m.CreateUserByAdminFunc = func(ctx context.Context, cr *domain.User, e, p, pw, r string) (*domain.User, error) {
+				return nil, err
+			}
+			return doAdminCreate(t, h, map[string]interface{}{"user_id": "5", "user_role": "admin"}, valid)
+		},
+	}
+	for route, call := range routes {
+		for _, tc := range tests {
+			t.Run(route+"/"+tc.name, func(t *testing.T) {
+				m := mocks.NewMockAuthService()
+				w := call(newRolesTestHandler(m), m, tc.err)
+				if w.Code != tc.status {
+					t.Fatalf("expected %d, got %d (%s)", tc.status, w.Code, w.Body.String())
+				}
+				var resp map[string]interface{}
+				_ = json.Unmarshal(w.Body.Bytes(), &resp)
+				if tc.status == http.StatusInternalServerError {
+					return
+				}
+				if resp["error"] != tc.wantError || resp["code"] != tc.wantCode {
+					t.Errorf("unexpected body %v", resp)
+				}
+				if f, has := resp["field"]; (tc.wantField == "") == has || (has && f != tc.wantField) {
+					t.Errorf("unexpected field in %v", resp)
+				}
+				if tc.noEchoText != "" && strings.Contains(w.Body.String(), tc.noEchoText) {
+					t.Errorf("body echoes input: %s", w.Body.String())
+				}
+			})
+		}
 	}
 }

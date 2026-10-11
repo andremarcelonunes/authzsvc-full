@@ -94,6 +94,9 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": registrationRateLimitedMessage})
 			return
 		}
+		if respondRegistrationValidationError(c, err) {
+			return
+		}
 		if errors.Is(err, domain.ErrOTPResendThrottled) {
 			// The user row was already created and is kept: a retry of /auth/register
 			// answers 409, so the client should call /auth/otp/send after waiting.
@@ -117,6 +120,27 @@ const roleNotSelfRegistrableMessage = "This role cannot be self-registered; only
 
 // registrationRateLimitedMessage is the client-facing message for domain.ErrRegistrationRateLimited (HTTP 429).
 const registrationRateLimitedMessage = "Too many registration attempts. Please try again later"
+
+// securityRejectedMessage is the fixed message for SECURITY_THREAT: scanner detail and input are never echoed.
+const securityRejectedMessage = "Request rejected by security validation"
+
+// respondRegistrationValidationError answers 400 for a domain.RegistrationValidationError and
+// reports whether it did. Body follows the validation middleware's flat keys ("error", "code")
+// plus "field" when known.
+func respondRegistrationValidationError(c *gin.Context, err error) bool {
+	var verr *domain.RegistrationValidationError
+	if !errors.As(err, &verr) {
+		return false
+	}
+	body := gin.H{"error": verr.Message, "code": verr.Code}
+	if verr.Code == "SECURITY_THREAT" {
+		body["error"] = securityRejectedMessage
+	} else if verr.Field != "" {
+		body["field"] = verr.Field
+	}
+	c.JSON(http.StatusBadRequest, body)
+	return true
+}
 
 // roleCreationNotAllowedMessage is the client-facing message for domain.ErrRoleCreationNotAllowed (HTTP 403).
 const roleCreationNotAllowedMessage = "Your role is not allowed to create accounts with the requested role"
@@ -162,6 +186,8 @@ func (h *AuthHandlers) AdminCreateUser(c *gin.Context) {
 		case errors.Is(err, domain.ErrOTPResendThrottled):
 			// The user row was already created and is kept (see Register).
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": otpResendThrottledMessage})
+		case respondRegistrationValidationError(c, err):
+			// answered with 400
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
 		}
