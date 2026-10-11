@@ -187,7 +187,7 @@ func TestProtectedEndpoints(t *testing.T) {
 			duration := time.Since(start)
 
 			// Validate performance
-			assert.Less(t, duration, 100*time.Millisecond, 
+			assertWithinBudget(t, duration, 100*time.Millisecond, 
 				"Protected endpoint %s should respond in < 100ms, took %v", tt.path, duration)
 
 			// Validate response status
@@ -312,7 +312,7 @@ func TestAuthenticationMiddleware(t *testing.T) {
 			duration := time.Since(start)
 
 			// Authentication should be fast
-			assert.Less(t, duration, 50*time.Millisecond, 
+			assertWithinBudget(t, duration, 50*time.Millisecond, 
 				"Authentication middleware should be fast, took %v", duration)
 
 			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
@@ -427,7 +427,7 @@ func TestAuthorizationMiddleware(t *testing.T) {
 			duration := time.Since(start)
 
 			// Authorization should be fast
-			assert.Less(t, duration, 100*time.Millisecond, 
+			assertWithinBudget(t, duration, 100*time.Millisecond, 
 				"Authorization should be fast, took %v", duration)
 
 			assert.Equal(t, tt.expectedStatus, resp.StatusCode, tt.description)
@@ -475,7 +475,7 @@ func TestTokenRefresh(t *testing.T) {
 		duration := time.Since(start)
 
 		// Refresh should be fast
-		assert.Less(t, duration, 100*time.Millisecond, 
+		assertWithinBudget(t, duration, 100*time.Millisecond, 
 			"Token refresh should be fast, took %v", duration)
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)

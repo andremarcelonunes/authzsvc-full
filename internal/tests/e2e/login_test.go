@@ -215,7 +215,7 @@ func TestLoginFlow(t *testing.T) {
 			duration := time.Since(start)
 
 			// Validate performance: login should complete in < 100ms
-			assert.Less(t, duration, 100*time.Millisecond, 
+			assertWithinBudget(t, duration, 100*time.Millisecond, 
 				"Login endpoint should respond in < 100ms, took %v", duration)
 
 			// Validate response status
@@ -341,8 +341,8 @@ func TestLoginPerformance(t *testing.T) {
 		avg := total / time.Duration(numLogins)
 
 		// Performance assertions - align with CLAUDE.md standards (<100ms for auth endpoints)
-		assert.Less(t, avg, 100*time.Millisecond, "Average login time should be < 100ms, got %v", avg)
-		assert.Less(t, max, 150*time.Millisecond, "Max login time should be < 150ms, got %v", max)
+		assertWithinBudget(t, avg, 100*time.Millisecond, "Average login time should be < 100ms, got %v", avg)
+		assertWithinBudget(t, max, 150*time.Millisecond, "Max login time should be < 150ms, got %v", max)
 
 		t.Logf("Login Performance: %d logins", numLogins)
 		t.Logf("  Average: %v", avg)
@@ -429,9 +429,9 @@ func TestLoginPerformance(t *testing.T) {
 		if len(durations) > 0 {
 			avgDuration := totalDuration / time.Duration(len(durations))
 			
-			assert.Less(t, avgDuration, 100*time.Millisecond, 
+			assertWithinBudget(t, avgDuration, 100*time.Millisecond, 
 				"Average concurrent login time should be < 100ms, got %v", avgDuration)
-			assert.Less(t, maxDuration, 200*time.Millisecond, 
+			assertWithinBudget(t, maxDuration, 200*time.Millisecond, 
 				"Max concurrent login time should be < 200ms, got %v", maxDuration)
 
 			t.Logf("Concurrent Login Performance: %d logins", len(durations))
@@ -468,7 +468,7 @@ func TestLoginDatabaseIntegration(t *testing.T) {
 			"SELECT * FROM users WHERE email = $1 LIMIT 1", user.Email)
 		
 		// Database lookup should be fast
-		assert.Less(t, queryDuration, 50*time.Millisecond, 
+		assertWithinBudget(t, queryDuration, 50*time.Millisecond, 
 			"User lookup should be < 50ms, got %v", queryDuration)
 
 		// Perform actual login and validate total time
@@ -487,7 +487,7 @@ func TestLoginDatabaseIntegration(t *testing.T) {
 		resp.Body.Close()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Less(t, totalDuration, 100*time.Millisecond, 
+		assertWithinBudget(t, totalDuration, 100*time.Millisecond, 
 			"Complete login should be < 100ms, got %v", totalDuration)
 
 		t.Logf("Database Performance:")

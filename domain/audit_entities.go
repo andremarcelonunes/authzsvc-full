@@ -27,7 +27,7 @@ type ComprehensiveAuditEvent struct {
 	UserAgent      string                 `json:"user_agent,omitempty" gorm:"type:text"`
 	
 	// Event details
-	Success        bool                   `json:"success" gorm:"not null;default:true"`
+	Success        bool                   `json:"success" gorm:"not null"`
 	ResourceType   string                 `json:"resource_type,omitempty" gorm:"size:50"`
 	ResourceID     string                 `json:"resource_id,omitempty" gorm:"size:128"`
 	Action         string                 `json:"action" gorm:"not null;size:50"`

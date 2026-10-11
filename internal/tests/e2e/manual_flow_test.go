@@ -29,7 +29,9 @@ func TestManualAuthenticationFlowWithDatabaseValidation(t *testing.T) {
 
 	// Test user data
 	testEmail := fmt.Sprintf("manual.test.%d@e2etest.local", time.Now().UnixNano())
-	testPhone := fmt.Sprintf("+1234%06d", time.Now().UnixNano()%1000000) // Unique phone per test
+	// The clock has microsecond resolution here, so a number derived from UnixNano()
+	// repeats across runs and collides with users left in the test database
+	testPhone := generateTestPhone()
 	testPassword := "TestPassword123!"
 	
 	// Variables to share between test steps

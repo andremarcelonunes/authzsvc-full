@@ -1573,3 +1573,38 @@ func TestAuthHandlers_Register_OTPResendThrottled(t *testing.T) {
 		t.Errorf("expected error message telling the client to wait, got %v", body)
 	}
 }
+
+// The OTP resend throttle on /auth/otp/send is a client-side condition (429), not a server error.
+func TestAuthHandlers_SendOTP_OTPResendThrottled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	mockOTPSvc := mocks.NewMockOTPService()
+	mockOTPSvc.GenerateFunc = func(ctx context.Context, phone string, userID uint) (*domain.OTPRequest, error) {
+		return nil, fmt.Errorf("please wait 30 seconds before requesting new OTP: %w", domain.ErrOTPResendThrottled)
+	}
+	mockUserRepo := mocks.NewMockUserRepository()
+	mockUserRepo.FindByIDFunc = func(ctx context.Context, userID uint) (*domain.User, error) {
+		return &domain.User{ID: 1, Email: "user@example.com", Phone: "+1234567890"}, nil
+	}
+	handler := NewAuthHandlers(mocks.NewMockAuthService(), mockOTPSvc, mockUserRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
+
+	reqBody, _ := json.Marshal(map[string]interface{}{"phone": "+1234567890", "user_id": 1})
+	req := httptest.NewRequest(http.MethodPost, "/auth/otp/send", bytes.NewBuffer(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	handler.SendOTP(c)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, w.Code)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to unmarshal response body: %v", err)
+	}
+	if body["error"] != "Please wait before requesting a new verification code" {
+		t.Errorf("unexpected error body: %v", body)
+	}
+}
