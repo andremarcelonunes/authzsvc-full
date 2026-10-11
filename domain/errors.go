@@ -18,6 +18,8 @@ var (
 	ErrOTPMaxAttempts = errors.New("maximum otp attempts exceeded")
 	ErrOTPNotFound    = errors.New("otp not found")
 	ErrOTPResendLimit = errors.New("otp resend limit exceeded")
+	// ErrOTPResendThrottled is returned when a new OTP is requested inside the resend window.
+	ErrOTPResendThrottled = errors.New("otp resend throttled")
 )
 
 // Token errors

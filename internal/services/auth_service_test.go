@@ -1171,3 +1171,31 @@ func TestAuthServiceImpl_CompleteAuthFlow(t *testing.T) {
 		t.Fatalf("logout failed: %v", err)
 	}
 }
+// When the OTP resend window is active, Register must propagate an error that
+// matches domain.ErrOTPResendThrottled so the handler can answer 429 instead of 500.
+func TestAuthServiceImpl_Register_OTPResendThrottled(t *testing.T) {
+	userRepo := mocks.NewMockUserRepository()
+	passwordSvc := mocks.NewMockPasswordService()
+	otpSvc := mocks.NewMockOTPService()
+	setupSuccessfulRegisterMocks(t, userRepo, passwordSvc, otpSvc)
+	otpSvc.GenerateFunc = func(ctx context.Context, phone string, userID uint) (*domain.OTPRequest, error) {
+		return nil, fmt.Errorf("please wait 42 seconds before requesting new OTP: %w", domain.ErrOTPResendThrottled)
+	}
+
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	authService := createAuthServiceForTest(t, userRepo, nil, passwordSvc, nil, otpSvc, nil, redisClient, createSuccessfulValidationMock(t))
+
+	user, err := authService.Register(createTestContext(t), "newuser@example.com", "+1234567890", "securepassword123", "user")
+	if !errors.Is(err, domain.ErrOTPResendThrottled) {
+		t.Fatalf("expected error wrapping domain.ErrOTPResendThrottled, got %v", err)
+	}
+	if user != nil {
+		t.Errorf("expected nil user on OTP failure, got %+v", user)
+	}
+}
