@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -73,15 +74,22 @@ type AuthzResponse struct {
 	Body    string            `json:"body,omitempty"`
 }
 
-// Authorize handles external authorization requests from Envoy
-func (h *ExternalAuthzHandlers) Authorize(c *gin.Context) {
-	var envoyReq EnvoyRequest
-	if err := c.ShouldBindJSON(&envoyReq); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid request format",
-			"details": err.Error(),
-		})
-		return
+// authzOutcome is the result of the shared authorization decision used by both
+// the JSON endpoint (Authorize) and the Envoy-native endpoint (Check).
+type authzOutcome struct {
+	status  int                // 200, 401, 403 or 500
+	message string             // client-safe message (error text for non-200)
+	detail  string             // internal detail, only set for 500; never sent by Check
+	claims  *domain.TokenClaims // set when status == 200
+}
+
+// decide holds the authentication + authorization logic shared by all
+// external authorization endpoints: Bearer token, token validation, Redis
+// session check, Casbin permission for role_<role> on (path, method) and the
+// policy's field rule (4th column).
+func (h *ExternalAuthzHandlers) decide(ctx context.Context, envoyReq EnvoyRequest) authzOutcome {
+	unauthorized := func(msg string) authzOutcome {
+		return authzOutcome{status: http.StatusUnauthorized, message: msg}
 	}
 
 	// Extract JWT token from authorization header
@@ -90,17 +98,15 @@ func (h *ExternalAuthzHandlers) Authorize(c *gin.Context) {
 		// Try lowercase header name (Envoy normalizes headers)
 		authHeader, exists = envoyReq.Attributes.Request.HTTP.Headers["Authorization"]
 	}
-	
+
 	if !exists {
-		h.respondUnauthorized(c, "Authorization header required")
-		return
+		return unauthorized("Authorization header required")
 	}
 
 	// Parse Bearer token
 	tokenParts := strings.SplitN(authHeader, " ", 2)
 	if len(tokenParts) != 2 || tokenParts[0] != "Bearer" {
-		h.respondUnauthorized(c, "Invalid authorization header format")
-		return
+		return unauthorized("Invalid authorization header format")
 	}
 
 	token := tokenParts[1]
@@ -110,27 +116,24 @@ func (h *ExternalAuthzHandlers) Authorize(c *gin.Context) {
 	if err != nil {
 		switch err {
 		case domain.ErrTokenExpired:
-			h.respondUnauthorized(c, "Token expired")
+			return unauthorized("Token expired")
 		case domain.ErrTokenInvalid, domain.ErrTokenMalformed:
-			h.respondUnauthorized(c, "Invalid token")
+			return unauthorized("Invalid token")
 		default:
-			h.respondUnauthorized(c, "Token validation failed")
+			return unauthorized("Token validation failed")
 		}
-		return
 	}
 
 	// Validate session exists in Redis (critical security check)
 	if claims.SessionID != "" {
-		session, err := h.sessionRepo.FindByID(c.Request.Context(), claims.SessionID)
+		session, err := h.sessionRepo.FindByID(ctx, claims.SessionID)
 		if err != nil || session == nil {
-			h.respondUnauthorized(c, "Session invalid or expired")
-			return
+			return unauthorized("Session invalid or expired")
 		}
-		
+
 		// Ensure session belongs to the same user
 		if session.UserID != claims.UserID {
-			h.respondUnauthorized(c, "Session user mismatch")
-			return
+			return unauthorized("Session user mismatch")
 		}
 	}
 
@@ -148,45 +151,118 @@ func (h *ExternalAuthzHandlers) Authorize(c *gin.Context) {
 	// Check if this endpoint requires authorization
 	allowed, validationRule, err := h.checkPermission(casbinRole, path, method)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Authorization check failed",
+		return authzOutcome{status: http.StatusInternalServerError, message: "Authorization check failed", detail: err.Error()}
+	}
+
+	if !allowed {
+		return authzOutcome{status: http.StatusForbidden, message: "Access denied"}
+	}
+
+	// If there's a validation rule, enforce it
+	if validationRule != "" {
+		valid, err := h.validateFields(ctx, envoyReq, validationRule, tokenClaims)
+		if err != nil {
+			return authzOutcome{status: http.StatusInternalServerError, message: "Field validation failed", detail: err.Error()}
+		}
+
+		if !valid {
+			return authzOutcome{status: http.StatusForbidden, message: "Field validation failed: Request values do not match token claims"}
+		}
+	}
+
+	return authzOutcome{status: http.StatusOK, claims: claims}
+}
+
+// Authorize handles external authorization requests from Envoy
+func (h *ExternalAuthzHandlers) Authorize(c *gin.Context) {
+	var envoyReq EnvoyRequest
+	if err := c.ShouldBindJSON(&envoyReq); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid request format",
 			"details": err.Error(),
 		})
 		return
 	}
 
-	if !allowed {
-		h.respondForbidden(c, "Access denied")
+	out := h.decide(c.Request.Context(), envoyReq)
+	switch out.status {
+	case http.StatusUnauthorized:
+		h.respondUnauthorized(c, out.message)
+	case http.StatusForbidden:
+		h.respondForbidden(c, out.message)
+	case http.StatusOK:
+		// Authorization successful - return allowed response
+		c.JSON(http.StatusOK, AuthzResponse{
+			Status: struct {
+				Code int `json:"code"`
+			}{Code: http.StatusOK},
+			Headers: map[string]string{
+				"x-user-id":   fmt.Sprintf("%d", out.claims.UserID),
+				"x-user-role": out.claims.Role,
+			},
+		})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   out.message,
+			"details": out.detail,
+		})
+	}
+}
+
+// maxCheckBodyBytes caps how much of the request body Check reads. Envoy only
+// sends up to with_request_body.max_request_bytes anyway.
+const maxCheckBodyBytes = 1 << 20
+
+// Check is the Envoy HTTP ext_authz compatible endpoint:
+//
+//	ANY /external/authz/check/*path
+//
+// Envoy calls it with the ORIGINAL method and path_prefix + original path
+// (+ query string). The request being authorized is therefore described by the
+// incoming HTTP request itself:
+//   - method  = request method (no special treatment for HEAD/OPTIONS)
+//   - path    = c.Param("path"), i.e. the wildcard remainder as Gin gives it
+//     (always starts with "/", percent-escapes already decoded, trailing slash
+//     preserved; a call to .../check/ authorizes "/")
+//   - query   = raw query string
+//   - headers = request headers (names lower-cased)
+//   - body    = request body, base64 encoded (may be empty/partial)
+//
+// The decision is taken from the status code (200 allow, 401/403/500 deny);
+// identity is returned only in the x-user-id / x-user-role response headers,
+// taken from the validated token (never from request headers).
+func (h *ExternalAuthzHandlers) Check(c *gin.Context) {
+	var envoyReq EnvoyRequest
+	httpReq := &envoyReq.Attributes.Request.HTTP
+	httpReq.Method = c.Request.Method
+	httpReq.Path = c.Param("path")
+	httpReq.Query = c.Request.URL.RawQuery
+	httpReq.Headers = make(map[string]string, len(c.Request.Header))
+	for name, values := range c.Request.Header {
+		httpReq.Headers[strings.ToLower(name)] = strings.Join(values, ", ")
+	}
+	if c.Request.Body != nil {
+		body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxCheckBodyBytes))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Authorization check failed"})
+			return
+		}
+		if len(body) > 0 {
+			httpReq.Body = base64.StdEncoding.EncodeToString(body)
+		}
+	}
+
+	out := h.decide(c.Request.Context(), envoyReq)
+	if out.status != http.StatusOK {
+		// Internal details (out.detail) are intentionally not exposed.
+		c.JSON(out.status, gin.H{"error": out.message})
 		return
 	}
 
-	// If there's a validation rule, enforce it
-	if validationRule != "" {
-		valid, err := h.validateFields(c.Request.Context(), envoyReq, validationRule, tokenClaims)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Field validation failed",
-				"details": err.Error(),
-			})
-			return
-		}
-
-		if !valid {
-			h.respondForbidden(c, "Field validation failed: Request values do not match token claims")
-			return
-		}
-	}
-
-	// Authorization successful - return allowed response
-	c.JSON(http.StatusOK, AuthzResponse{
-		Status: struct {
-			Code int `json:"code"`
-		}{Code: http.StatusOK},
-		Headers: map[string]string{
-			"x-user-id":   fmt.Sprintf("%d", claims.UserID),
-			"x-user-role": claims.Role,
-		},
-	})
+	c.Header("x-user-id", fmt.Sprintf("%d", out.claims.UserID))
+	c.Header("x-user-role", out.claims.Role)
+	c.Status(http.StatusOK)
+	c.Writer.WriteHeaderNow()
 }
 
 // Health handles health check requests from Envoy

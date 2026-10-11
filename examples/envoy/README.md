@@ -18,7 +18,7 @@ Client Request
       ↓
    Envoy Proxy (8000)
       ↓
-External Auth Service (authzsvc:8080/external/authz)
+External Auth Service (authzsvc:8080/external/authz/check/<original path>)
       ↓ (if authorized)
    Backend Service
 ```
@@ -84,16 +84,28 @@ External Auth Service (authzsvc:8080/external/authz)
      -H "Authorization: Bearer YOUR_USER_JWT_TOKEN"
    ```
 
+## Envoy-compatible endpoint
+
+`ANY /external/authz/check/*path` follows Envoy's HTTP ext_authz protocol:
+
+- The request being authorized is the incoming request itself: method = HTTP method, path = the part after `/external/authz/check` (as decoded by Gin; trailing slash preserved; `/external/authz/check/` authorizes `/`), query = raw query string, headers = request headers, body = request body. HEAD and OPTIONS are authorized like any other method.
+- Decision by status: `200` allow (empty body, identity in the response headers `x-user-id` and `x-user-role`, taken only from the validated token), `401` bad/missing token or session, `403` denied by policy or field rule, `500` internal failure. Non-200 bodies are `{"error": "..."}`.
+- Configure Envoy with `path_prefix: "/external/authz/check"`. Authorization logic is identical to the JSON endpoint.
+
+The older `POST /external/authz` (custom JSON request/response) is unchanged but is NOT what Envoy's HTTP filter speaks.
+
+Note: the authorization response headers overwrite any client-supplied `x-user-id` / `x-user-role` for authorized requests; routes that bypass ext_authz must not trust those headers.
+
 ## Configuration Details
 
 ### Envoy External Authorization Filter
 
 The `envoy-external-authz.yaml` configures Envoy to:
 
-1. **Forward auth requests** to `http://authzsvc:8080/external/authz`
+1. **Forward auth requests** to `http://authzsvc:8080/external/authz/check` (`path_prefix`) followed by the original path
 2. **Include original headers** (authorization, content-type, etc.)
 3. **Forward response headers** from auth service to backend
-4. **Bypass auth** for public endpoints (health, login, register)
+4. **Bypass auth** is not part of this minimal example (a bypass route needs `typed_per_filter_config` disabling ext_authz)
 5. **Fail closed** if auth service is unavailable
 
 ### Request Flow
@@ -101,8 +113,7 @@ The `envoy-external-authz.yaml` configures Envoy to:
 1. **Client sends request** to Envoy (port 8000)
 2. **Envoy checks route** - bypass auth for public endpoints
 3. **For protected routes**:
-   - Extract request metadata (method, path, headers, body)
-   - Send to `/external/authz` endpoint
+   - Envoy calls `ANY /external/authz/check/<original path>[?query]` with the original method and allowed headers (and body, if `with_request_body` is set)
    - Wait for authorization response
 4. **Auth service validates**:
    - JWT token from Authorization header
@@ -279,6 +290,10 @@ docker-compose -f docker-compose.envoy.yaml logs -f authzsvc | grep "external/au
 
 2. **Test auth service directly**:
    ```bash
+   curl http://localhost:8080/external/authz/check/auth/me \
+     -H "Authorization: Bearer TOKEN" -i
+
+   # legacy JSON endpoint:
    curl -X POST http://localhost:8080/external/authz \
      -H "Content-Type: application/json" \
      -d '{"attributes":{"request":{"http":{"method":"GET","path":"/auth/me","headers":{"authorization":"Bearer TOKEN"}}}}}'
