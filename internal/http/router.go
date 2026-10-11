@@ -36,6 +36,8 @@ func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers,
 	// External authorization endpoints for Envoy integration (no validation needed)
 	external := r.Group("/external")
 	external.POST("/authz", eh.Authorize)
+	// Envoy HTTP ext_authz compatible endpoint (path_prefix: /external/authz/check)
+	external.Any("/authz/check/*path", eh.Check)
 	external.GET("/health", eh.Health)
 
 	// CB-182: Apply validation middleware to auth endpoints
