@@ -170,7 +170,7 @@ func TestLoginFlow(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 			expectTokens:   false,
 			expectSession:  false,
-			expectedError:  "Error:Field validation for",
+			expectedError:  "Invalid identifier format",
 		},
 		{
 			name: "login with missing password fails",

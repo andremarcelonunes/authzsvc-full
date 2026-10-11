@@ -1295,7 +1295,7 @@ func TestAuthHandlers_Login(t *testing.T) {
 		setupMocks     func(*mocks.MockAuthService)
 		expectedStatus int
 		expectedBody   map[string]interface{}
-		validateCalls  func(t *testing.T, authSvc *mocks.MockAuthService)
+		expectAuthCall bool
 	}{
 		{
 			name: "successful login",
@@ -1304,9 +1304,9 @@ func TestAuthHandlers_Login(t *testing.T) {
 				Password: "password123",
 			},
 			setupMocks: func(authSvc *mocks.MockAuthService) {
-				authSvc.LoginFunc = func(ctx context.Context, email, password string) (*domain.AuthResult, error) {
+				authSvc.AuthenticateUserFunc = func(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
 					return &domain.AuthResult{
-						User: &domain.User{ID: 1, Email: email, Role: "user"},
+						User: &domain.User{ID: 1, Email: request.Email, Role: "user"},
 						AccessToken:  "access_token",
 						RefreshToken: "refresh_token",
 						ExpiresIn:    3600,
@@ -1327,11 +1327,37 @@ func TestAuthHandlers_Login(t *testing.T) {
 					},
 				},
 			},
-			validateCalls: func(t *testing.T, authSvc *mocks.MockAuthService) {
-				if authSvc.LoginFunc == nil {
-					t.Error("expected Login to be called")
+			expectAuthCall: true,
+		},
+		{
+			name: "successful login with phone identifier",
+			requestBody: LoginRequest{
+				Identifier: "+5511999999999",
+				Password:   "password123",
+			},
+			setupMocks: func(authSvc *mocks.MockAuthService) {
+				authSvc.AuthenticateUserFunc = func(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
+					return &domain.AuthResult{
+						User:         &domain.User{ID: 2, Email: "phone@example.com", Phone: request.Identifier, Role: "user"},
+						AccessToken:  "access_token",
+						RefreshToken: "refresh_token",
+						ExpiresIn:    3600,
+					}, nil
 				}
 			},
+			expectedStatus: http.StatusOK,
+			expectedBody: map[string]interface{}{
+				"data": map[string]interface{}{
+					"access_token": "access_token",
+					"token_type":   "Bearer",
+					"user": map[string]interface{}{
+						"id":    float64(2),
+						"phone": "+5511999999999",
+						"role":  "user",
+					},
+				},
+			},
+			expectAuthCall: true,
 		},
 		{
 			name: "invalid credentials",
@@ -1340,7 +1366,7 @@ func TestAuthHandlers_Login(t *testing.T) {
 				Password: "wrongpassword",
 			},
 			setupMocks: func(authSvc *mocks.MockAuthService) {
-				authSvc.LoginFunc = func(ctx context.Context, email, password string) (*domain.AuthResult, error) {
+				authSvc.AuthenticateUserFunc = func(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
 					return nil, domain.ErrInvalidCredentials
 				}
 			},
@@ -1348,11 +1374,7 @@ func TestAuthHandlers_Login(t *testing.T) {
 			expectedBody: map[string]interface{}{
 				"error": "Invalid credentials",
 			},
-			validateCalls: func(t *testing.T, authSvc *mocks.MockAuthService) {
-				if authSvc.LoginFunc == nil {
-					t.Error("expected Login to be called")
-				}
-			},
+			expectAuthCall: true,
 		},
 		{
 			name: "user inactive",
@@ -1361,7 +1383,7 @@ func TestAuthHandlers_Login(t *testing.T) {
 				Password: "password123",
 			},
 			setupMocks: func(authSvc *mocks.MockAuthService) {
-				authSvc.LoginFunc = func(ctx context.Context, email, password string) (*domain.AuthResult, error) {
+				authSvc.AuthenticateUserFunc = func(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
 					return nil, domain.ErrUserInactive
 				}
 			},
@@ -1369,11 +1391,7 @@ func TestAuthHandlers_Login(t *testing.T) {
 			expectedBody: map[string]interface{}{
 				"error": "Account is inactive",
 			},
-			validateCalls: func(t *testing.T, authSvc *mocks.MockAuthService) {
-				if authSvc.LoginFunc == nil {
-					t.Error("expected Login to be called")
-				}
-			},
+			expectAuthCall: true,
 		},
 		{
 			name: "phone not verified",
@@ -1382,22 +1400,18 @@ func TestAuthHandlers_Login(t *testing.T) {
 				Password: "password123",
 			},
 			setupMocks: func(authSvc *mocks.MockAuthService) {
-				authSvc.LoginFunc = func(ctx context.Context, email, password string) (*domain.AuthResult, error) {
+				authSvc.AuthenticateUserFunc = func(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
 					return nil, domain.ErrPhoneNotVerified
 				}
 			},
 			expectedStatus: http.StatusForbidden,
 			expectedBody: map[string]interface{}{
-				"error": "Phone number not verified",
+				"error": "Phone number not verified. Please verify your phone number to login with phone.",
 			},
-			validateCalls: func(t *testing.T, authSvc *mocks.MockAuthService) {
-				if authSvc.LoginFunc == nil {
-					t.Error("expected Login to be called")
-				}
-			},
+			expectAuthCall: true,
 		},
 		{
-			name: "invalid request body - missing email",
+			name: "invalid request body - missing email and identifier",
 			requestBody: LoginRequest{
 				Email:    "",
 				Password: "password123",
@@ -1405,9 +1419,9 @@ func TestAuthHandlers_Login(t *testing.T) {
 			setupMocks: func(authSvc *mocks.MockAuthService) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody: map[string]interface{}{
-				"error": "Key: 'LoginRequest.Email' Error:Field validation for 'Email' failed on the 'required' tag",
+				"error": "Either email or identifier field must be provided",
 			},
-			validateCalls: func(t *testing.T, authSvc *mocks.MockAuthService) {},
+			expectAuthCall: false,
 		},
 		{
 			name: "internal server error",
@@ -1416,7 +1430,7 @@ func TestAuthHandlers_Login(t *testing.T) {
 				Password: "password123",
 			},
 			setupMocks: func(authSvc *mocks.MockAuthService) {
-				authSvc.LoginFunc = func(ctx context.Context, email, password string) (*domain.AuthResult, error) {
+				authSvc.AuthenticateUserFunc = func(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
 					return nil, errors.New("database error")
 				}
 			},
@@ -1424,11 +1438,7 @@ func TestAuthHandlers_Login(t *testing.T) {
 			expectedBody: map[string]interface{}{
 				"error": "Login failed",
 			},
-			validateCalls: func(t *testing.T, authSvc *mocks.MockAuthService) {
-				if authSvc.LoginFunc == nil {
-					t.Error("expected Login to be called")
-				}
-			},
+			expectAuthCall: true,
 		},
 	}
 
@@ -1439,8 +1449,20 @@ func TestAuthHandlers_Login(t *testing.T) {
 			mockOTPSvc := mocks.NewMockOTPService()
 			mockUserRepo := mocks.NewMockUserRepository()
 
-			// Setup mocks
+			// Setup mocks, recording the request handed to the auth service
 			tt.setupMocks(mockAuthSvc)
+			var authRequests []*domain.AuthRequest
+			if configured := mockAuthSvc.AuthenticateUserFunc; configured != nil {
+				mockAuthSvc.AuthenticateUserFunc = func(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
+					authRequests = append(authRequests, request)
+					return configured(ctx, request)
+				}
+			} else {
+				mockAuthSvc.AuthenticateUserFunc = func(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) {
+					authRequests = append(authRequests, request)
+					return nil, errors.New("unexpected AuthenticateUser call")
+				}
+			}
 
 			// Create handler
 			handler := NewAuthHandlers(mockAuthSvc, mockOTPSvc, mockUserRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
@@ -1479,8 +1501,21 @@ func TestAuthHandlers_Login(t *testing.T) {
 				}
 			}
 
-			// Validate calls
-			tt.validateCalls(t, mockAuthSvc)
+			// Validate the call to the auth service
+			if !tt.expectAuthCall {
+				if len(authRequests) != 0 {
+					t.Errorf("expected AuthenticateUser not to be called, got %d calls", len(authRequests))
+				}
+				return
+			}
+			if len(authRequests) != 1 {
+				t.Fatalf("expected AuthenticateUser to be called once, got %d calls", len(authRequests))
+			}
+			got := authRequests[0]
+			if got.Email != tt.requestBody.Email || got.Identifier != tt.requestBody.Identifier || got.Password != tt.requestBody.Password {
+				t.Errorf("AuthenticateUser called with email=%q identifier=%q, want email=%q identifier=%q (and the request password)",
+					got.Email, got.Identifier, tt.requestBody.Email, tt.requestBody.Identifier)
+			}
 		})
 	}
 }

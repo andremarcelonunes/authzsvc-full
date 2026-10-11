@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,6 +161,21 @@ func setupTestDatabase(dsn string) (*gorm.DB, *sql.DB, error) {
 	rawDB.SetMaxIdleConns(10)
 	rawDB.SetMaxOpenConns(20)
 	rawDB.SetConnMaxLifetime(time.Hour)
+
+	// E2E tests truncate tables: refuse to run against anything but a test database
+	var dbName string
+	if err := db.Raw("SELECT current_database()").Scan(&dbName).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to read test database name: %w", err)
+	}
+	if !strings.HasSuffix(dbName, "_test") {
+		return nil, nil, fmt.Errorf("refusing to run E2E tests against database %q: its name must end with \"_test\"", dbName)
+	}
+
+	// A fresh test database has no schema yet
+	schema := testconfig.GetTestDatabaseConfig().Schema
+	if err := db.Exec(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %q", schema)).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to create test schema %q: %w", schema, err)
+	}
 
 	// Run auto-migration to ensure schema is up to date
 	if err := db.AutoMigrate(

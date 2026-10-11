@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
@@ -268,7 +269,7 @@ func TestAuthServiceImpl_AuthenticateUser_CB194(t *testing.T) {
 					}, nil
 				}
 			},
-			expectedError: "invalid identifier: identifier must be a valid email or phone number",
+			expectedError: "identifier format is invalid: identifier must be a valid email or phone number",
 		},
 		{
 			name: "failure: authentication strategy fails",
@@ -385,6 +386,10 @@ func TestAuthServiceImpl_AuthenticateUser_CB194(t *testing.T) {
 				}
 				if err.Error() != tt.expectedError {
 					t.Errorf("expected error '%s', got '%s'", tt.expectedError, err.Error())
+				}
+				// The handler maps this sentinel to HTTP 400
+				if strings.HasPrefix(tt.expectedError, domain.ErrInvalidIdentifier.Error()) && !errors.Is(err, domain.ErrInvalidIdentifier) {
+					t.Errorf("expected error to wrap domain.ErrInvalidIdentifier, got '%v'", err)
 				}
 				return
 			}
