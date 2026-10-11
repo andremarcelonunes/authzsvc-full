@@ -71,6 +71,20 @@ type ValidationConfig struct {
 	EnableGracefulMode     bool          `yaml:"enable_graceful_mode"` // Continue if validation fails
 }
 
+// BootstrapAccount holds the credentials of an account created at startup.
+type BootstrapAccount struct {
+	Email    string `yaml:"email"`
+	Phone    string `yaml:"phone"`
+	Password string `yaml:"password"`
+}
+
+// BootstrapConfig is the optional "bootstrap" section: the root administrator and an optional
+// dedicated service administrator (role admin) created idempotently at startup.
+type BootstrapConfig struct {
+	RootAdmin    BootstrapAccount `yaml:"root_admin"`
+	ServiceAdmin BootstrapAccount `yaml:"service_admin"`
+}
+
 type ConfigFile struct {
 	App        AppConfig        `yaml:"app"`
 	Database   DatabaseConfig   `yaml:"database"`
@@ -80,6 +94,7 @@ type ConfigFile struct {
 	Twilio     TwilioConfig     `yaml:"twilio"`
 	Casbin     CasbinConfig     `yaml:"casbin"`
 	Validation ValidationConfig `yaml:"validation"`
+	Bootstrap  BootstrapConfig  `yaml:"bootstrap"`
 }
 
 type Config struct {
@@ -106,6 +121,9 @@ type Config struct {
 	
 	// CB-182: Validation system configuration
 	ValidationConfig ValidationConfig
+
+	// Bootstrap accounts (root / service admin) created at startup; environment overrides config file
+	Bootstrap BootstrapConfig
 }
 
 func env(k, def string) string {
@@ -181,7 +199,25 @@ func Load() (*Config, error) {
 		ValidationRules:  validationRules,
 		UseSimpleCasbin:  env("USE_SIMPLE_CASBIN", "false") == "true",
 		ValidationConfig: validationConfig,
+		Bootstrap:        loadBootstrapConfig(configFile.Bootstrap),
 	}, nil
+}
+
+// loadBootstrapConfig applies the ROOT_ADMIN_* and SERVICE_ADMIN_* environment variables
+// over the values read from the optional bootstrap section of the config file.
+func loadBootstrapConfig(fromFile BootstrapConfig) BootstrapConfig {
+	return BootstrapConfig{
+		RootAdmin: BootstrapAccount{
+			Email:    env("ROOT_ADMIN_EMAIL", fromFile.RootAdmin.Email),
+			Phone:    env("ROOT_ADMIN_PHONE", fromFile.RootAdmin.Phone),
+			Password: env("ROOT_ADMIN_PASSWORD", fromFile.RootAdmin.Password),
+		},
+		ServiceAdmin: BootstrapAccount{
+			Email:    env("SERVICE_ADMIN_EMAIL", fromFile.ServiceAdmin.Email),
+			Phone:    env("SERVICE_ADMIN_PHONE", fromFile.ServiceAdmin.Phone),
+			Password: env("SERVICE_ADMIN_PASSWORD", fromFile.ServiceAdmin.Password),
+		},
+	}
 }
 
 func loadConfigFile(path string) (*ConfigFile, error) {

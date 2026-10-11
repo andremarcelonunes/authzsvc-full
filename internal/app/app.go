@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -265,6 +264,13 @@ func Run(cfg *config.Config) error {
 		)
 	}
 
+	// Bootstrap root / service administrator (idempotent, never blocks startup)
+	services.NewBootstrapService(userRepo, passwordSvc, businessValidationSvc, auditSvc, nil).Run(
+		context.Background(),
+		services.BootstrapAccount(cfg.Bootstrap.RootAdmin),
+		services.BootstrapAccount(cfg.Bootstrap.ServiceAdmin),
+	)
+
 	// Initialize handlers
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo, tokenSvc, sessionRepo)
 	polH := &handlers.PolicyHandlers{E: cas.E}
@@ -289,73 +295,8 @@ func Run(cfg *config.Config) error {
 	// Build router with CB-182 validation middleware and LGPD deletion handlers
 	r := httpx.BuildRouterWithDeletion(authH, polH, externalAuthzH, docsH, passwordChangeH, userDeletionH, jwtMW, casbinMW, validationMW)
 
-	// ===== ENSURE STANDARD POLICIES EXIST =====
-	// Instead of checking if ANY policies exist, ensure SPECIFIC policies exist
-	// This prevents overwriting custom policies while ensuring standard ones are present
-
-	standardPolicies := [][]string{
-		// Basic user permissions
-		{"role_user", "/auth/me", "GET", "*"},
-		{"role_user", "/auth/logout", "POST", "*"},
-		{"role_user", "/auth/otp/*", "POST", "*"},
-		{"role_user", "/users/*", "GET", "path.id==token.user_id"},
-
-		// Password management permissions for authenticated users
-		{"role_user", "/password/change", "POST", "*"},
-		{"role_user", "/password/change", "GET", "*"},
-		{"role_user", "/password/change/*", "GET", "*"},
-		{"role_user", "/password/change/*/verification", "PUT", "*"},
-		{"role_user", "/password/change/*", "DELETE", "*"},
-		{"role_user", "/password/reset", "POST", "*"},
-		{"role_user", "/password/reset/*", "PUT", "*"},
-
-		// LGPD User Deletion permissions for authenticated users (Article 18 rights)
-		{"role_user", "/users/me/deletion", "POST", "*"},           // Right to deletion
-		{"role_user", "/users/me/deletion/*", "GET", "*"},          // Check deletion status
-		{"role_user", "/users/me/deletion/*", "DELETE", "*"},       // Cancel deletion
-		{"role_user", "/users/me/export", "POST", "*"},             // Right to data portability
-		{"role_user", "/users/me/deletion/history", "GET", "*"},    // View deletion history
-
-		// Admin permissions
-		{"role_admin", "/admin/*", "(GET|POST|PUT|DELETE)", "*"},
-		{"role_admin", "/auth/*", "(GET|POST|PUT|DELETE)", "*"},
-		
-		// Admin LGPD deletion management permissions
-		{"role_admin", "/admin/users/deletion/*/process", "POST", "*"},     // Process deletion requests
-		{"role_admin", "/admin/users/deletion/pending", "GET", "*"},        // List pending deletions
-
-		// Other roles from policies.csv
-		{"role_attendant", "/auth/me", "GET", "*"},
-		{"role_attendant", "/v1/clients/*", "(GET|PUT)", "*"},
-		{"role_owner", "/users/:user_id", "(GET|PUT)", "*"},
-	}
-
-	policyUpdated := false
-	for _, policy := range standardPolicies {
-		// Check if this specific policy exists
-		exists, _ := cas.E.HasPolicy(policy[0], policy[1], policy[2], policy[3])
-		if !exists {
-			cas.E.AddPolicy(policy[0], policy[1], policy[2], policy[3])
-			policyUpdated = true
-			log.Printf("casbin: added missing policy: %v", policy)
-		}
-	}
-
-	// Ensure role inheritance
-	hasInheritance, _ := cas.E.HasGroupingPolicy("role_admin", "role_user")
-	if !hasInheritance {
-		cas.E.AddGroupingPolicy("role_admin", "role_user")
-		policyUpdated = true
-		log.Println("casbin: added role inheritance - admin inherits from user")
-	} // Save policies only if something was updated
-	if policyUpdated {
-		if err := cas.E.SavePolicy(); err != nil {
-			log.Printf("CRITICAL: Failed to save Casbin policies: %v", err)
-			return fmt.Errorf("authorization system initialization failed: %w", err)
-		}
-		log.Println("casbin: policies updated and saved")
-	} else {
-		log.Println("casbin: all standard policies already exist")
+	if err := EnsureStandardPolicies(cas.E); err != nil {
+		return err
 	}
 
 	addr := ":" + cfg.Port

@@ -71,6 +71,11 @@ func (s *AuditIntegratedAuthService) Register(ctx context.Context, email, phone,
 	return user, err
 }
 
+// CreateUserByAdmin implements domain.AuthService by delegating to the wrapped service
+func (s *AuditIntegratedAuthService) CreateUserByAdmin(ctx context.Context, creator *domain.User, email, phone, password, role string) (*domain.User, error) {
+	return s.authService.CreateUserByAdmin(ctx, creator, email, phone, password, role)
+}
+
 // Login implements domain.AuthService with audit logging
 func (s *AuditIntegratedAuthService) Login(ctx context.Context, email, password string) (*domain.AuthResult, error) {
 	startTime := time.Now()

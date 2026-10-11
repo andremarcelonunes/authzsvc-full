@@ -195,6 +195,7 @@ func (m *MockExtendedUserRepository) FindByPhone(ctx context.Context, phone stri
 func (m *MockExtendedUserRepository) FindByIdentifier(ctx context.Context, identifier string, identifierType domain.IdentifierType) (*domain.User, error) { return nil, domain.ErrUserNotFound }
 func (m *MockExtendedUserRepository) Update(ctx context.Context, user *domain.User) error { return nil }
 func (m *MockExtendedUserRepository) ActivatePhone(ctx context.Context, userID uint) error { return nil }
+func (m *MockExtendedUserRepository) ExistsByRole(ctx context.Context, role string) (bool, error) { return false, nil }
 func (m *MockExtendedUserRepository) Anonymize(ctx context.Context, userID uint, anonymousData *domain.AnonymizedUser) error { return nil }
 func (m *MockExtendedUserRepository) Deactivate(ctx context.Context, userID uint, reason string) error { return nil }
 func (m *MockExtendedUserRepository) Reactivate(ctx context.Context, userID uint) error { return nil }

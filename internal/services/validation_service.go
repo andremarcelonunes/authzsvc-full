@@ -245,7 +245,12 @@ func (s *RequestValidationServiceImpl) ValidateRegistrationRequest(ctx context.C
 	if len(result.Errors) == 0 {
 		result.IsValid = true
 		result.Passed = true
-		
+
+		if validationCtx.SkipRegistrationRateLimit {
+			result.ValidationTime = time.Since(startTime)
+			return result, nil
+		}
+
 		// REGISTRATION BUSINESS RULE: Allow exactly 2 registration attempts per 30 seconds  
 		windowStart := time.Now().Truncate(30 * time.Second)
 		rateLimitKey := fmt.Sprintf("registration_rate:%s:%d", validationCtx.IPAddress, windowStart.Unix())

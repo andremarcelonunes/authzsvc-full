@@ -74,10 +74,7 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	}
 
 	// Set default role if not provided
-	role := req.Role
-	if role == "" {
-		role = "user"
-	}
+	role := domain.NormalizeRegistrationRole(req.Role)
 	
 	// Get client IP for rate limiting
 	clientIP := c.ClientIP()
@@ -85,8 +82,19 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	
 	user, err := h.authSvc.Register(ctx, req.Email, req.Phone, req.Password, role)
 	if err != nil {
+		if errors.Is(err, domain.ErrRoleNotAllowedForRegistration) {
+			c.JSON(http.StatusForbidden, gin.H{"error": roleNotSelfRegistrableMessage})
+			return
+		}
 		if errors.Is(err, domain.ErrUserAlreadyExists) {
 			c.JSON(http.StatusConflict, gin.H{"error": "User already exists"})
+			return
+		}
+		if errors.Is(err, domain.ErrRegistrationRateLimited) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": registrationRateLimitedMessage})
+			return
+		}
+		if respondRegistrationValidationError(c, err) {
 			return
 		}
 		if errors.Is(err, domain.ErrOTPResendThrottled) {
@@ -103,6 +111,94 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 		"data": gin.H{
 			"message": "User registered successfully. Please verify your phone number.",
 			"user_id": user.ID,
+		},
+	})
+}
+
+// roleNotSelfRegistrableMessage is the client-facing message for domain.ErrRoleNotAllowedForRegistration (HTTP 403).
+const roleNotSelfRegistrableMessage = "This role cannot be self-registered; only user, client or contact accounts can be created through public registration"
+
+// registrationRateLimitedMessage is the client-facing message for domain.ErrRegistrationRateLimited (HTTP 429).
+const registrationRateLimitedMessage = "Too many registration attempts. Please try again later"
+
+// securityRejectedMessage is the fixed message for SECURITY_THREAT: scanner detail and input are never echoed.
+const securityRejectedMessage = "Request rejected by security validation"
+
+// respondRegistrationValidationError answers 400 for a domain.RegistrationValidationError and
+// reports whether it did. Body follows the validation middleware's flat keys ("error", "code")
+// plus "field" when known.
+func respondRegistrationValidationError(c *gin.Context, err error) bool {
+	var verr *domain.RegistrationValidationError
+	if !errors.As(err, &verr) {
+		return false
+	}
+	body := gin.H{"error": verr.Message, "code": verr.Code}
+	if verr.Code == "SECURITY_THREAT" {
+		body["error"] = securityRejectedMessage
+	} else if verr.Field != "" {
+		body["field"] = verr.Field
+	}
+	c.JSON(http.StatusBadRequest, body)
+	return true
+}
+
+// roleCreationNotAllowedMessage is the client-facing message for domain.ErrRoleCreationNotAllowed (HTTP 403).
+const roleCreationNotAllowedMessage = "Your role is not allowed to create accounts with the requested role"
+
+// AdminCreateUserRequest represents the privileged user creation request (POST /admin/users).
+type AdminCreateUserRequest struct {
+	Email    string `json:"email" binding:"required,email"`
+	Phone    string `json:"phone" binding:"required"`
+	Password string `json:"password" binding:"required,min=6"`
+	Role     string `json:"role" binding:"required"`
+}
+
+// AdminCreateUser handles POST /admin/users: root/admin create accounts for other roles.
+// The creator's identity and role come from the validated JWT (set by the auth middleware).
+// Which role may create which is enforced by the service (domain.CanCreateRole).
+func (h *AuthHandlers) AdminCreateUser(c *gin.Context) {
+	var req AdminCreateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	creatorIDRaw, idOK := c.Get("user_id")
+	creatorRoleRaw, roleOK := c.Get("user_role")
+	creatorIDStr, _ := creatorIDRaw.(string)
+	creatorRole, _ := creatorRoleRaw.(string)
+	creatorID, parseErr := strconv.ParseUint(creatorIDStr, 10, 64)
+	if !idOK || !roleOK || parseErr != nil || creatorRole == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+	creator := &domain.User{ID: uint(creatorID), Role: creatorRole}
+
+	ctx := context.WithValue(c.Request.Context(), "client_ip", c.ClientIP())
+
+	user, err := h.authSvc.CreateUserByAdmin(ctx, creator, req.Email, req.Phone, req.Password, req.Role)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrRoleCreationNotAllowed):
+			c.JSON(http.StatusForbidden, gin.H{"error": roleCreationNotAllowedMessage})
+		case errors.Is(err, domain.ErrUserAlreadyExists):
+			c.JSON(http.StatusConflict, gin.H{"error": "User already exists"})
+		case errors.Is(err, domain.ErrOTPResendThrottled):
+			// The user row was already created and is kept (see Register).
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": otpResendThrottledMessage})
+		case respondRegistrationValidationError(c, err):
+			// answered with 400
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"data": gin.H{
+			"user_id": user.ID,
+			"role":    user.Role,
+			"message": "User created successfully. The user must verify their phone number.",
 		},
 	})
 }

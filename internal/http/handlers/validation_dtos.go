@@ -23,7 +23,7 @@ type RegisterRequestV2 struct {
 	Email    string `json:"email" binding:"required,email,max=255" validate:"business_email,no_disposable_email,domain_whitelist"`
 	Phone    string `json:"phone" binding:"required,min=10,max=15" validate:"phone_format,phone_region_valid,no_voip"`
 	Password string `json:"password" binding:"required,min=8,max=128" validate:"password_complexity,no_common_passwords,no_personal_info"`
-	Role     string `json:"role,omitempty" binding:"omitempty,oneof=user admin moderator" validate:"role_allowed_for_registration"`
+	Role     string `json:"role,omitempty" binding:"omitempty,oneof=user client contact" validate:"role_allowed_for_registration"`
 	
 	// Enhanced security fields
 	CaptchaToken      string `json:"captcha_token,omitempty" validate:"captcha_valid_if_required"`

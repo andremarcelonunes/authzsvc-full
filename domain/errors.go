@@ -9,6 +9,14 @@ var (
 	ErrUserAlreadyExists = errors.New("user already exists")
 	ErrUserInactive      = errors.New("user account is inactive")
 	ErrPhoneNotVerified  = errors.New("phone number not verified")
+	// ErrRoleNotAllowedForRegistration is returned when public registration asks for a role that cannot be self-registered.
+	ErrRoleNotAllowedForRegistration = errors.New("role cannot be self-registered")
+	// ErrRegistrationRateLimited is returned when the public registration rate limit is exceeded.
+	ErrRegistrationRateLimited = errors.New("registration rate limit exceeded")
+	// ErrRegistrationValidationFailed is the sentinel unwrapped by RegistrationValidationError.
+	ErrRegistrationValidationFailed = errors.New("registration validation failed")
+	// ErrRoleCreationNotAllowed is returned when the creator's role may not create an account with the requested role.
+	ErrRoleCreationNotAllowed = errors.New("creator role is not allowed to create this role")
 )
 
 // OTP errors
@@ -164,3 +172,17 @@ var (
 var (
 	ErrNotFound = errors.New("record not found")
 )
+// RegistrationValidationError is returned when the validator ran and rejected the registration
+// input. It carries the first ValidationError's code, field and message (client errors, HTTP 400).
+// It unwraps to ErrRegistrationValidationFailed.
+type RegistrationValidationError struct {
+	Code    string
+	Field   string
+	Message string
+}
+
+func (e *RegistrationValidationError) Error() string {
+	return "registration validation failed: " + e.Message
+}
+
+func (e *RegistrationValidationError) Unwrap() error { return ErrRegistrationValidationFailed }
