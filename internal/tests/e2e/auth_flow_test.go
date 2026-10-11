@@ -31,7 +31,9 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 
 	// Test user data
 	email := generateTestEmail()
-	phone := fmt.Sprintf("+1555%07d", time.Now().UnixNano()%10000000) // Unique phone per test
+	// The clock has microsecond resolution here, so a number derived from UnixNano()
+	// repeats across runs and collides with users left in the test database
+	phone := generateTestPhone()
 	password := "SecurePassword123!"
 
 	t.Run("complete user journey: register -> verify OTP -> login -> access protected -> refresh -> logout", func(t *testing.T) {
@@ -248,15 +250,15 @@ func TestCompleteAuthenticationFlow(t *testing.T) {
 		t.Logf("  Logout: %v", logoutDuration)
 
 		// All operations should meet performance requirements
-		assert.Less(t, regDuration, 100*time.Millisecond, "Registration should be < 100ms")
-		assert.Less(t, otpDuration, 100*time.Millisecond, "OTP verification should be < 100ms")
-		assert.Less(t, loginDuration, 100*time.Millisecond, "Login should be < 100ms")
-		assert.Less(t, meDuration, 100*time.Millisecond, "Protected endpoint should be < 100ms")
-		assert.Less(t, refreshDuration, 100*time.Millisecond, "Token refresh should be < 100ms")
-		assert.Less(t, logoutDuration, 100*time.Millisecond, "Logout should be < 100ms")
+		assertWithinBudget(t, regDuration, 100*time.Millisecond, "Registration should be < 100ms")
+		assertWithinBudget(t, otpDuration, 100*time.Millisecond, "OTP verification should be < 100ms")
+		assertWithinBudget(t, loginDuration, 100*time.Millisecond, "Login should be < 100ms")
+		assertWithinBudget(t, meDuration, 100*time.Millisecond, "Protected endpoint should be < 100ms")
+		assertWithinBudget(t, refreshDuration, 100*time.Millisecond, "Token refresh should be < 100ms")
+		assertWithinBudget(t, logoutDuration, 100*time.Millisecond, "Logout should be < 100ms")
 
 		totalFlowDuration := regDuration + otpDuration + loginDuration + meDuration + refreshDuration + logoutDuration
-		assert.Less(t, totalFlowDuration, 500*time.Millisecond,
+		assertWithinBudget(t, totalFlowDuration, 500*time.Millisecond,
 			"Complete authentication flow should be < 500ms total")
 
 		// Cleanup

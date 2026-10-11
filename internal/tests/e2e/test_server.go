@@ -539,9 +539,7 @@ func (ts *TestServer) ValidatePerformance(t *testing.T) {
 		avgThreshold = 50 * time.Millisecond
 	}
 
-	if metrics.P95Time > p95Threshold {
-		t.Errorf("P95 response time %v exceeds %v target", metrics.P95Time, p95Threshold)
-	}
+	assertWithinBudget(t, metrics.P95Time, p95Threshold, "P95 response time exceeds %v target", p95Threshold)
 
 	if metrics.AverageTime > avgThreshold {
 		t.Logf("Warning: Average response time %v is above %v", metrics.AverageTime, avgThreshold)

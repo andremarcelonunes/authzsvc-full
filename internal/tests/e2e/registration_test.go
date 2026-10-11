@@ -180,7 +180,7 @@ func TestRegistrationFlow(t *testing.T) {
 			duration := time.Since(start)
 
 			// Validate performance: registration should complete in < 150ms
-			assert.Less(t, duration, 150*time.Millisecond,
+			assertWithinBudget(t, duration, 150*time.Millisecond,
 				"Registration endpoint should respond in < 150ms, took %v", duration)
 
 			// Log error responses for debugging
@@ -396,9 +396,9 @@ func TestRegistrationPerformance(t *testing.T) {
 			avgDuration := totalDuration / time.Duration(len(durations))
 
 			// Performance assertions
-			assert.Less(t, avgDuration, 100*time.Millisecond,
+			assertWithinBudget(t, avgDuration, 100*time.Millisecond,
 				"Average registration time should be < 100ms, got %v", avgDuration)
-			assert.Less(t, maxDuration, 200*time.Millisecond,
+			assertWithinBudget(t, maxDuration, 200*time.Millisecond,
 				"Max registration time should be < 200ms, got %v", maxDuration)
 
 			t.Logf("Performance Results: %d registrations", len(durations))

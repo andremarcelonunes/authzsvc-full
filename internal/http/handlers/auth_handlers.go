@@ -92,7 +92,7 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 		if errors.Is(err, domain.ErrOTPResendThrottled) {
 			// The user row was already created and is kept: a retry of /auth/register
 			// answers 409, so the client should call /auth/otp/send after waiting.
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Please wait before requesting a new verification code"})
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": otpResendThrottledMessage})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register user"})
@@ -222,6 +222,9 @@ func getLogSafeIdentifier(req LoginRequest) string {
 	return "unknown"
 }
 
+// otpResendThrottledMessage is the client-facing message for domain.ErrOTPResendThrottled (HTTP 429).
+const otpResendThrottledMessage = "Please wait before requesting a new verification code"
+
 // SendOTP handles OTP generation and sending
 func (h *AuthHandlers) SendOTP(c *gin.Context) {
 	var req struct {
@@ -253,6 +256,10 @@ func (h *AuthHandlers) SendOTP(c *gin.Context) {
 
 	_, err = h.otpSvc.Generate(c.Request.Context(), req.Phone, req.UserID)
 	if err != nil {
+		if errors.Is(err, domain.ErrOTPResendThrottled) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": otpResendThrottledMessage})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send OTP"})
 		return
 	}
