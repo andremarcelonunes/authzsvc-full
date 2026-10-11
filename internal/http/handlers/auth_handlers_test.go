@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1537,5 +1539,37 @@ func validateValue(t *testing.T, key string, expected, actual interface{}) {
 		}
 	} else if expected != actual {
 		t.Errorf("for key %s, expected %v, got %v", key, expected, actual)
+	}
+}
+
+// The OTP resend throttle on registration is a client-side condition (429), not a server error.
+func TestAuthHandlers_Register_OTPResendThrottled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	mockAuthSvc := mocks.NewMockAuthService()
+	mockAuthSvc.RegisterFunc = func(ctx context.Context, email, phone, password, role string) (*domain.User, error) {
+		return nil, fmt.Errorf("failed to send OTP: %w", fmt.Errorf("please wait 30 seconds before requesting new OTP: %w", domain.ErrOTPResendThrottled))
+	}
+	handler := NewAuthHandlers(mockAuthSvc, mocks.NewMockOTPService(), mocks.NewMockUserRepository(), mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
+
+	reqBody, _ := json.Marshal(RegisterRequest{Email: "user@example.com", Phone: "+1234567890", Password: "password123"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewBuffer(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	handler.Register(c)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, w.Code)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to unmarshal response body: %v", err)
+	}
+	msg, ok := body["error"].(string)
+	if !ok || !strings.Contains(strings.ToLower(msg), "wait") {
+		t.Errorf("expected error message telling the client to wait, got %v", body)
 	}
 }

@@ -28,6 +28,20 @@ type OTPConfig struct {
 	ResendWindow time.Duration
 }
 
+// otpResendThrottledError keeps the human-readable wait message while matching
+// domain.ErrOTPResendThrottled through errors.Is.
+type otpResendThrottledError struct {
+	waitSeconds int64
+}
+
+func (e *otpResendThrottledError) Error() string {
+	return fmt.Sprintf("please wait %d seconds before requesting new OTP", e.waitSeconds)
+}
+
+func (e *otpResendThrottledError) Unwrap() error {
+	return domain.ErrOTPResendThrottled
+}
+
 // OTPLogEntry represents an OTP log entry for development/testing
 type OTPLogEntry struct {
 	Timestamp time.Time `json:"timestamp"`
@@ -55,7 +69,7 @@ func (s *OTPServiceImpl) Generate(ctx context.Context, phone string, userID uint
 
 	// Check resend throttle
 	if canResend, waitTime, _ := s.CanResend(ctx, phone); !canResend {
-		return nil, fmt.Errorf("please wait %d seconds before requesting new OTP", waitTime)
+		return nil, &otpResendThrottledError{waitSeconds: waitTime}
 	}
 
 	// Generate secure OTP code

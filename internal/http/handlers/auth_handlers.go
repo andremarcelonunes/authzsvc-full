@@ -89,6 +89,12 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "User already exists"})
 			return
 		}
+		if errors.Is(err, domain.ErrOTPResendThrottled) {
+			// The user row was already created and is kept: a retry of /auth/register
+			// answers 409, so the client should call /auth/otp/send after waiting.
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Please wait before requesting a new verification code"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register user"})
 		return
 	}

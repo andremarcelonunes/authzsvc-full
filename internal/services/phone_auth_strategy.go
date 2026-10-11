@@ -103,10 +103,7 @@ func (s *PhoneAuthStrategy) ValidateCredentials(ctx context.Context, identifier,
 		return fmt.Errorf("invalid phone number format: %w", err)
 	}
 
-	// Password length validation (basic check)
-	if len(password) < 8 {
-		return errors.New("password must be at least 8 characters long")
-	}
-
+	// Password length policy is enforced at registration, not at login: a shorter
+	// stored password must still reach the lookup/verify path (wrong -> ErrInvalidCredentials).
 	return nil
 }

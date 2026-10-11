@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -581,4 +582,25 @@ func TestOTPServiceImpl_CompleteOTPFlow(t *testing.T) {
 
 	// Clean up
 	redisClient.FlushDB(ctx)
+}
+// A second Generate inside the resend window must fail with an error that matches
+// domain.ErrOTPResendThrottled while keeping the human-readable wait message.
+func TestOTPServiceImpl_Generate_ResendWindowWrapsSentinel(t *testing.T) {
+	otpService, _, _, _ := createOTPServiceForTest(t)
+	ctx := createTestContext(t)
+
+	if _, err := otpService.Generate(ctx, "+1234567890", 1); err != nil {
+		t.Fatalf("first Generate should succeed, got %v", err)
+	}
+
+	otpReq, err := otpService.Generate(ctx, "+1234567890", 1)
+	if !errors.Is(err, domain.ErrOTPResendThrottled) {
+		t.Fatalf("expected error wrapping domain.ErrOTPResendThrottled, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "seconds before requesting new OTP") {
+		t.Errorf("expected wait message to be preserved, got %q", err.Error())
+	}
+	if otpReq != nil {
+		t.Errorf("expected nil OTP request, got %+v", otpReq)
+	}
 }
