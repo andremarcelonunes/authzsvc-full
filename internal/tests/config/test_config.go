@@ -147,16 +147,28 @@ type TestDatabaseConfig struct {
 	Password string
 }
 
-// GetTestDatabaseConfig returns your specific test database configuration
+// GetTestDatabaseConfig returns the test database configuration.
+//
+// E2E tests truncate tables, so they use a dedicated database (authdb_test by
+// default), never the development one. Each value can be overridden through
+// TEST_DB_HOST, TEST_DB_PORT, TEST_DB_NAME, TEST_DB_SCHEMA, TEST_DB_USER and
+// TEST_DB_PASSWORD.
 func GetTestDatabaseConfig() *TestDatabaseConfig {
 	return &TestDatabaseConfig{
-		Host:     "localhost",
-		Port:     "5432",
-		Database: "authdb", 
-		Schema:   "auth",
-		User:     "auth",
-		Password: "123456",
+		Host:     envOrDefault("TEST_DB_HOST", "localhost"),
+		Port:     envOrDefault("TEST_DB_PORT", "5432"),
+		Database: envOrDefault("TEST_DB_NAME", "authdb_test"),
+		Schema:   envOrDefault("TEST_DB_SCHEMA", "auth"),
+		User:     envOrDefault("TEST_DB_USER", "auth"),
+		Password: envOrDefault("TEST_DB_PASSWORD", "123456"),
 	}
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }
 
 // GetTestDSN builds the test database DSN from your configuration

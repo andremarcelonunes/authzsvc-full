@@ -473,7 +473,8 @@ func TestAuthFlowConcurrency(t *testing.T) {
 		for i := 0; i < concurrentUsers; i++ {
 			go func(index int) {
 				email := fmt.Sprintf("concurrent.%d.%s", index, generateTestEmail())
-				phone := fmt.Sprintf("+1555%07d", 2000000+index)
+				// Unique phone per run: a fixed number hits the OTP resend throttle left by the previous run
+				phone := generateTestPhone()
 
 				reqBody := map[string]string{
 					"email":    email,

@@ -192,6 +192,7 @@ func (m *MockExtendedUserRepository) HardDelete(ctx context.Context, userID uint
 func (m *MockExtendedUserRepository) Create(ctx context.Context, user *domain.User) error { return nil }
 func (m *MockExtendedUserRepository) FindByEmail(ctx context.Context, email string) (*domain.User, error) { return nil, domain.ErrUserNotFound }
 func (m *MockExtendedUserRepository) FindByPhone(ctx context.Context, phone string) (*domain.User, error) { return nil, domain.ErrUserNotFound }
+func (m *MockExtendedUserRepository) FindByIdentifier(ctx context.Context, identifier string, identifierType domain.IdentifierType) (*domain.User, error) { return nil, domain.ErrUserNotFound }
 func (m *MockExtendedUserRepository) Update(ctx context.Context, user *domain.User) error { return nil }
 func (m *MockExtendedUserRepository) ActivatePhone(ctx context.Context, userID uint) error { return nil }
 func (m *MockExtendedUserRepository) Anonymize(ctx context.Context, userID uint, anonymousData *domain.AnonymizedUser) error { return nil }

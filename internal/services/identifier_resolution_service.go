@@ -168,13 +168,13 @@ func (s *IdentifierResolutionServiceImpl) ValidateIdentifier(ctx context.Context
 	switch identifierType {
 	case domain.IdentifierTypeEmail:
 		if !s.isEmail(identifier) {
-			return fmt.Errorf("invalid email format")
+			return fmt.Errorf("invalid email format: %w", domain.ErrInvalidIdentifier)
 		}
 		return nil
 		
 	case domain.IdentifierTypePhone:
 		if !s.isPhone(identifier) {
-			return fmt.Errorf("invalid phone number format")
+			return fmt.Errorf("invalid phone number format: %w", domain.ErrInvalidIdentifier)
 		}
 		return nil
 		

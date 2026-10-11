@@ -288,7 +288,7 @@ func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.
 		}
 		
 		if !resolution.IsValid {
-			return nil, fmt.Errorf("invalid identifier: %s", resolution.ValidationMessage)
+			return nil, fmt.Errorf("%w: %s", domain.ErrInvalidIdentifier, resolution.ValidationMessage)
 		}
 		
 		authMethod = resolution.Type
@@ -314,13 +314,15 @@ func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.
 		return nil, fmt.Errorf("unsupported authentication method: %s", authMethod)
 	}
 	
+	clientIP, _ := ctx.Value("client_ip").(string)
+
 	// Perform authentication using selected strategy
 	lookupStart := time.Now()
 	user, err := authStrategy.Authenticate(ctx, identifier, request.Password)
 	if err != nil {
 		// Log failed authentication attempt - CB-183
 		if s.auditSvc != nil {
-			s.auditSvc.LogLoginAttempt(ctx, 0, identifier, string(authMethod), false, err.Error())
+			s.auditSvc.LogLoginAttempt(ctx, 0, identifier, clientIP, false, err.Error())
 		}
 		return nil, err
 	}
@@ -377,7 +379,7 @@ func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.
 	
 	// Log successful authentication - CB-183 with method metadata
 	if s.auditSvc != nil {
-		s.auditSvc.LogLoginAttempt(ctx, user.ID, identifier, string(authMethod), true, 
+		s.auditSvc.LogLoginAttempt(ctx, user.ID, identifier, clientIP, true, 
 			fmt.Sprintf("authentication successful via %s", authMethod))
 	}
 	
