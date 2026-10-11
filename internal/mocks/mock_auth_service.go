@@ -10,6 +10,7 @@ import (
 // MockAuthService implements domain.AuthService interface for testing
 type MockAuthService struct {
 	RegisterFunc       func(ctx context.Context, email, phone, password, role string) (*domain.User, error)
+	CreateUserByAdminFunc func(ctx context.Context, creator *domain.User, email, phone, password, role string) (*domain.User, error)
 	LoginFunc          func(ctx context.Context, email, password string) (*domain.AuthResult, error)
 	RefreshTokenFunc   func(ctx context.Context, refreshToken string) (*domain.AuthResult, error)
 	LogoutFunc         func(ctx context.Context, sessionID string) error
@@ -28,6 +29,24 @@ func (m *MockAuthService) Register(ctx context.Context, email, phone, password, 
 		return m.RegisterFunc(ctx, email, phone, password, role)
 	}
 	// Default behavior: return a mock user
+	return &domain.User{
+		ID:            1,
+		Email:         email,
+		Phone:         phone,
+		PasswordHash:  "hashed_" + password,
+		Role:          role,
+		IsActive:      true,
+		PhoneVerified: false,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}, nil
+}
+
+// CreateUserByAdmin creates a user on behalf of a privileged creator
+func (m *MockAuthService) CreateUserByAdmin(ctx context.Context, creator *domain.User, email, phone, password, role string) (*domain.User, error) {
+	if m.CreateUserByAdminFunc != nil {
+		return m.CreateUserByAdminFunc(ctx, creator, email, phone, password, role)
+	}
 	return &domain.User{
 		ID:            1,
 		Email:         email,

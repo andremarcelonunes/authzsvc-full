@@ -18,6 +18,10 @@ type ValidationContext struct {
 	RequestID    string            `json:"request_id"`
 	Endpoint     string            `json:"endpoint"`
 	Method       string            `json:"method"`
+	// SkipRegistrationRateLimit is set for registrations performed by an authenticated,
+	// authorized creator (POST /admin/users): the per-IP limit protecting the public
+	// endpoint does not apply. All other registration validation still runs.
+	SkipRegistrationRateLimit bool `json:"-"`
 	Headers      map[string]string `json:"headers,omitempty"`
 	IPAddress    string            `json:"ip_address"`
 	UserAgent    string            `json:"user_agent,omitempty"`

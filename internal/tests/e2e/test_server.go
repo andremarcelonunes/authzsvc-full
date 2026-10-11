@@ -234,6 +234,12 @@ func createTestRouter(suite *TestSuite) (*gin.Engine, error) {
 	// Make admin inherit ALL user permissions automatically
 	cas.E.AddGroupingPolicy("role_admin", "role_user")
 
+	// Role hierarchy added for the root/admin/attendant/client/contact model (matches app.EnsureStandardPolicies)
+	cas.E.AddGroupingPolicy("role_root", "role_admin")
+	cas.E.AddGroupingPolicy("role_client", "role_user")
+	cas.E.AddGroupingPolicy("role_contact", "role_user")
+	cas.E.AddGroupingPolicy("role_attendant", "role_user")
+
 	// Save all policies to database
 	_ = cas.E.SavePolicy()
 

@@ -14,6 +14,8 @@ type UserRepository interface {
 	FindByIdentifier(ctx context.Context, identifier string, identifierType IdentifierType) (*User, error)
 	Update(ctx context.Context, user *User) error
 	ActivatePhone(ctx context.Context, userID uint) error
+	// ExistsByRole reports whether at least one (non-deleted) user has the given role.
+	ExistsByRole(ctx context.Context, role string) (bool, error)
 }
 
 // SessionRepository defines session data access operations
@@ -45,6 +47,10 @@ type AuthenticationStrategy interface {
 // AuthService defines authentication business logic
 type AuthService interface {
 	Register(ctx context.Context, email, phone, password, role string) (*User, error)
+	// CreateUserByAdmin creates an account on behalf of an authenticated creator (root/admin).
+	// creator needs ID and Role (taken from the validated JWT). Fails with ErrRoleCreationNotAllowed
+	// when creator.Role may not create role. Same lifecycle as Register (OTP sent, audit written).
+	CreateUserByAdmin(ctx context.Context, creator *User, email, phone, password, role string) (*User, error)
 	Login(ctx context.Context, email, password string) (*AuthResult, error)
 	RefreshToken(ctx context.Context, refreshToken string) (*AuthResult, error)
 	Logout(ctx context.Context, sessionID string) error

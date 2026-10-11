@@ -64,8 +64,29 @@ func NewAuthService(
 	}
 }
 
-// Register implements domain.AuthService
+// Register implements domain.AuthService (public, unauthenticated registration).
+// Only unprivileged roles may be self-registered; an empty role defaults to "user".
 func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, role string) (*domain.User, error) {
+	role = domain.NormalizeRegistrationRole(role)
+	if !domain.IsRoleAllowedForPublicRegistration(role) {
+		return nil, domain.ErrRoleNotAllowedForRegistration
+	}
+	return s.createUserAccount(ctx, "/auth/register", nil, email, phone, password, role)
+}
+
+// CreateUserByAdmin implements domain.AuthService. The creator (identity and role taken
+// from the validated JWT) may only create the roles allowed by domain.CanCreateRole.
+func (s *AuthServiceImpl) CreateUserByAdmin(ctx context.Context, creator *domain.User, email, phone, password, role string) (*domain.User, error) {
+	if creator == nil || !domain.CanCreateRole(creator.Role, role) {
+		return nil, domain.ErrRoleCreationNotAllowed
+	}
+	return s.createUserAccount(ctx, "/admin/users", creator, email, phone, password, role)
+}
+
+// createUserAccount holds the creation steps shared by public registration and privileged
+// creation: validation, password hashing, persistence, audit event and OTP dispatch.
+// creator is nil for public registration.
+func (s *AuthServiceImpl) createUserAccount(ctx context.Context, endpoint string, creator *domain.User, email, phone, password, role string) (*domain.User, error) {
 	// Validate registration request if validator is available
 	if s.requestValidator != nil {
 		// Get client IP from context if available
@@ -73,20 +94,22 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 		if ip, ok := ctx.Value("client_ip").(string); ok && ip != "" {
 			clientIP = ip
 		}
-		
+
 		validationCtx := &domain.ValidationContext{
-			RequestID:  fmt.Sprintf("reg_%d", time.Now().UnixNano()),
-			Endpoint:   "/auth/register",
-			Method:     "POST",
-			Timestamp:  time.Now(),
-			IPAddress:  clientIP,
+			RequestID: fmt.Sprintf("reg_%d", time.Now().UnixNano()),
+			Endpoint:  endpoint,
+			Method:    "POST",
+			Timestamp: time.Now(),
+			IPAddress: clientIP,
+			// Privileged creation is authenticated and authorized: no public per-IP rate limit.
+			SkipRegistrationRateLimit: creator != nil,
 		}
-		
+
 		validationResult, err := s.requestValidator.ValidateRegistrationRequest(ctx, email, phone, password, role, validationCtx)
 		if err != nil {
 			return nil, fmt.Errorf("registration validation failed: %w", err)
 		}
-		
+
 		if !validationResult.Passed {
 			// Convert validation errors to proper domain errors
 			if len(validationResult.Errors) > 0 {
@@ -95,6 +118,8 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 				switch firstError.Code {
 				case "EMAIL_ALREADY_EXISTS", "PHONE_ALREADY_EXISTS":
 					return nil, domain.ErrUserAlreadyExists
+				case "RATE_LIMIT_EXCEEDED":
+					return nil, domain.ErrRegistrationRateLimited
 				default:
 					// Preserve specific validation error message
 					return nil, fmt.Errorf("registration validation failed: %s", firstError.Message)
@@ -115,7 +140,7 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 		Email:        email,
 		Phone:        phone,
 		PasswordHash: hashedPassword,
-		Role:         role, // Use provided role
+		Role:         role,
 		IsActive:     true,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
@@ -124,23 +149,28 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 	if err := s.userRepo.Create(ctx, user); err != nil {
 		// Check if error is due to unique constraint violation (duplicate email/phone)
 		errorMsg := err.Error()
-		if strings.Contains(errorMsg, "duplicate key") || 
-		   strings.Contains(errorMsg, "UNIQUE constraint") ||
-		   strings.Contains(errorMsg, "violates unique constraint") ||
-		   strings.Contains(errorMsg, "duplicated key") ||
-		   strings.Contains(errorMsg, "already exists") {
+		if strings.Contains(errorMsg, "duplicate key") ||
+			strings.Contains(errorMsg, "UNIQUE constraint") ||
+			strings.Contains(errorMsg, "violates unique constraint") ||
+			strings.Contains(errorMsg, "duplicated key") ||
+			strings.Contains(errorMsg, "already exists") {
 			return nil, domain.ErrUserAlreadyExists
 		}
 		// Log failed registration attempt - CB-183
 		if s.auditSvc != nil {
-			s.auditSvc.LogSystemEvent(ctx, "user_registration_failed", 
-				fmt.Sprintf("Failed to register user with email %s", email), 
-				map[string]interface{}{
-					"email": email,
-					"phone": phone,
-					"role":  role,
-					"error": err.Error(),
-				})
+			metadata := map[string]interface{}{
+				"email": email,
+				"phone": phone,
+				"role":  role,
+				"error": err.Error(),
+			}
+			if creator != nil {
+				metadata["created_by_user_id"] = creator.ID
+				metadata["created_by_role"] = creator.Role
+			}
+			s.auditSvc.LogSystemEvent(ctx, "user_registration_failed",
+				fmt.Sprintf("Failed to register user with email %s", email),
+				metadata)
 		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
@@ -152,6 +182,18 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 			// Log audit error but don't fail registration (graceful degradation)
 			// In production, this could be logged to a monitoring system
 		}
+		// The registration event has no creator field, so the creator is recorded in the
+		// metadata of a companion system event.
+		if creator != nil {
+			_ = s.auditSvc.LogSystemEvent(ctx, "user_created_by_admin",
+				fmt.Sprintf("User %d created by user %d (%s)", user.ID, creator.ID, creator.Role),
+				map[string]interface{}{
+					"created_user_id":    user.ID,
+					"created_user_role":  role,
+					"created_by_user_id": creator.ID,
+					"created_by_role":    creator.Role,
+				})
+		}
 	}
 
 	// Generate and send OTP
@@ -159,7 +201,7 @@ func (s *AuthServiceImpl) Register(ctx context.Context, email, phone, password, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to send OTP: %w", err)
 	}
-	
+
 	return user, nil
 }
 

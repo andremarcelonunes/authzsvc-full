@@ -9,6 +9,12 @@ var (
 	ErrUserAlreadyExists = errors.New("user already exists")
 	ErrUserInactive      = errors.New("user account is inactive")
 	ErrPhoneNotVerified  = errors.New("phone number not verified")
+	// ErrRoleNotAllowedForRegistration is returned when public registration asks for a role that cannot be self-registered.
+	ErrRoleNotAllowedForRegistration = errors.New("role cannot be self-registered")
+	// ErrRegistrationRateLimited is returned when the public registration rate limit is exceeded.
+	ErrRegistrationRateLimited = errors.New("registration rate limit exceeded")
+	// ErrRoleCreationNotAllowed is returned when the creator's role may not create an account with the requested role.
+	ErrRoleCreationNotAllowed = errors.New("creator role is not allowed to create this role")
 )
 
 // OTP errors

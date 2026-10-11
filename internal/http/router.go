@@ -118,6 +118,11 @@ func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers,
 	adm.POST("/policies", ph.Add)
 	adm.DELETE("/policies", ph.Remove)
 
+	// Privileged user creation. Casbin only requires access to /admin/* (role_admin, and role_root
+	// via inheritance, already have it for all methods), so no new path policy is needed: the
+	// creator-role vs created-role rule (root/admin matrix) is enforced in AuthService.CreateUserByAdmin.
+	adm.POST("/users", ah.AdminCreateUser)
+
 	// Admin LGPD deletion management endpoints
 	if delh != nil {
 		adminUsers := adm.Group("/users")

@@ -644,16 +644,12 @@ func (s *BusinessValidationServiceImpl) validatePasswordComplexityRules(password
 func (s *BusinessValidationServiceImpl) validateRoleRules(role string, result *domain.ValidationResult) error {
 	result.RulesApplied++
 
-	// Define allowed roles
-	allowedRoles := []string{"user", "admin", "moderator"}
-	
-	roleValid := false
-	for _, allowedRole := range allowedRoles {
-		if role == allowedRole {
-			roleValid = true
-			break
-		}
-	}
+	// Role names live in domain/roles.go. An empty role means the default role (user).
+	// Whether a role may be self-registered (public) or only created by root/admin is decided
+	// in AuthServiceImpl, which is shared by both paths and answers 403; this rule only rejects
+	// roles that do not exist.
+	allowedRoles := domain.AllRoles()
+	roleValid := domain.IsKnownRole(domain.NormalizeRegistrationRole(role))
 
 	if !roleValid {
 		result.IsValid = false

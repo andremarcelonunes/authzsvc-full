@@ -60,6 +60,15 @@ func (r *UserRepositoryImpl) FindByEmail(ctx context.Context, email string) (*do
 	return r.dbToDomain(&dbUser), nil
 }
 
+// ExistsByRole implements domain.UserRepository
+func (r *UserRepositoryImpl) ExistsByRole(ctx context.Context, role string) (bool, error) {
+	var count int64
+	if err := r.db.WithContext(ctx).Model(&DBUser{}).Where("role = ?", role).Limit(1).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // FindByPhone implements domain.UserRepository
 func (r *UserRepositoryImpl) FindByPhone(ctx context.Context, phone string) (*domain.User, error) {
 	var dbUser DBUser

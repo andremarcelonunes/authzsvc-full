@@ -15,6 +15,7 @@ type MockUserRepository struct {
 	FindByIdentifierFunc func(ctx context.Context, identifier string, identifierType domain.IdentifierType) (*domain.User, error) // CB-194
 	UpdateFunc         func(ctx context.Context, user *domain.User) error
 	ActivatePhoneFunc  func(ctx context.Context, userID uint) error
+	ExistsByRoleFunc   func(ctx context.Context, role string) (bool, error)
 }
 
 // NewMockUserRepository creates a new MockUserRepository with default behaviors
@@ -91,6 +92,15 @@ func (m *MockUserRepository) ActivatePhone(ctx context.Context, userID uint) err
 	}
 	// Default behavior: success
 	return nil
+}
+
+// ExistsByRole reports whether any user has the given role
+func (m *MockUserRepository) ExistsByRole(ctx context.Context, role string) (bool, error) {
+	if m.ExistsByRoleFunc != nil {
+		return m.ExistsByRoleFunc(ctx, role)
+	}
+	// Default behavior: no user with that role
+	return false, nil
 }
 
 // Compile-time interface compliance verification
