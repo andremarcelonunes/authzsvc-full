@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -8,7 +9,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/you/authzsvc/internal/infrastructure/repositories"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+	"gorm.io/gorm/schema"
 )
 
 // notTables are structs that carry gorm tags but are not tables of their own.
@@ -103,5 +112,73 @@ func TestEveryPersistedModelIsMigrated(t *testing.T) {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Errorf("these persisted models are not in the AutoMigrate list (a fresh database would lack their table): %v", missing)
+	}
+}
+
+type ddlRecorder struct {
+	logger.Interface
+	statements []string
+}
+
+func (r *ddlRecorder) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
+	sql, _ := fc()
+	r.statements = append(r.statements, sql)
+}
+
+// The DDL GORM generates for the password tables has the columns, types and indexes the repositories
+// use. GORM runs in dry-run mode over a connection that is never opened, so no database is touched.
+func TestPasswordTablesDDL(t *testing.T) {
+	rec := &ddlRecorder{Interface: logger.Default.LogMode(logger.Silent)}
+	db, err := gorm.Open(postgres.New(postgres.Config{DSN: "host=127.0.0.1 port=1 user=x dbname=x sslmode=disable"}), &gorm.Config{
+		DryRun:               true,
+		DisableAutomaticPing: true,
+		Logger:               rec,
+		NamingStrategy:       schema.NamingStrategy{TablePrefix: "auth."},
+	})
+	if err != nil {
+		t.Fatalf("dry-run connection: %v", err)
+	}
+	if err := db.Migrator().CreateTable(&repositories.DBPasswordHistory{}, &repositories.DBPasswordChangeRequest{}); err != nil {
+		t.Fatalf("dry-run CreateTable: %v", err)
+	}
+	ddl := strings.Join(rec.statements, "\n")
+	for _, want := range []string{
+		`CREATE TABLE "auth"."password_history"`,
+		`"user_id" bigint NOT NULL`,
+		`"password_hash" varchar(255) NOT NULL`,
+		`CREATE TABLE "auth"."password_change_requests"`,
+		`"id" uuid`,
+		`"otp_code" text`,
+		`"otp_attempts" bigint DEFAULT 0`,
+		`"nonce" text NOT NULL`,
+		`"status" varchar(50) NOT NULL`,
+		`"expires_at" timestamptz NOT NULL`,
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Errorf("the generated DDL lacks %q:\n%s", want, ddl)
+		}
+	}
+	if n := strings.Count(ddl, "CREATE INDEX"); n < 6 {
+		t.Errorf("expected the user_id / status / expiry indexes, got %d CREATE INDEX statements:\n%s", n, ddl)
+	}
+}
+
+// The migration list is parseable by GORM: every model gets a table name.
+func TestEveryModelHasATableName(t *testing.T) {
+	seen := map[string]bool{}
+	for _, model := range Models() {
+		s, err := schema.Parse(model, &sync.Map{}, schema.NamingStrategy{TablePrefix: "auth."})
+		if err != nil {
+			t.Fatalf("%T: %v", model, err)
+		}
+		if s.Table == "" || seen[s.Table] {
+			t.Errorf("%T: empty or duplicated table %q", model, s.Table)
+		}
+		seen[s.Table] = true
+	}
+	for _, table := range []string{"auth.password_history", "auth.password_change_requests"} {
+		if !seen[table] {
+			t.Errorf("table %s is not in Models()", table)
+		}
 	}
 }

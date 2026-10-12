@@ -24,48 +24,33 @@ func Open(dsn string) (*gorm.DB, error) {
 	return gorm.Open(postgres.Open(dsn), config)
 }
 
-// AutoMigrate performs database migration for all required tables
-// This includes user tables, Casbin policy tables for RBAC, and CB-183 audit tables
+// Models is the single list of tables the service reads or writes. Both startup paths migrate exactly
+// this list, and TestEveryPersistedModelIsMigrated fails when a persisted model is missing from it.
+// Casbin's table is created by its own adapter in AutoMigrate; sessions, OTP state and SMS budget are
+// in Redis. The users table comes first (other tables refer to its ids).
+func Models() []interface{} {
+	return []interface{}{
+		&repositories.DBUser{},                  // auth.users
+		&repositories.DBPasswordHistory{},       // auth.password_history: reuse check, deletion
+		&repositories.DBPasswordChangeRequest{}, // auth.password_change_requests: password change and e-mail reset requests
+		&domain.ComprehensiveAuditEvent{},       // CB-183 audit events
+		&domain.SecurityViolation{},             // CB-182 security violations
+		&domain.ValidationRule{},                // CB-182 validation rules
+		&domain.DeletionRequest{},               // LGPD deletion
+		&domain.UserDataExport{},
+		&domain.DeletionAuditLog{},
+		&domain.DataRetentionPolicy{},
+		&domain.AnonymizedUser{},
+	}
+}
+
+// AutoMigrate performs database migration for all required tables: every model of Models(), the
+// Casbin policy table for RBAC, and the CB-183 audit indexes.
 func AutoMigrate(db *gorm.DB) error {
-	// Migrate user tables using GORM models
-	if err := db.AutoMigrate(&repositories.DBUser{}); err != nil {
-		return fmt.Errorf("failed to migrate users table: %w", err)
-	}
-
-	// CB-183: Migrate audit events table with comprehensive schema
-	if err := db.AutoMigrate(&domain.ComprehensiveAuditEvent{}); err != nil {
-		return fmt.Errorf("failed to migrate audit_events table: %w", err)
-	}
-
-	// CB-182: Migrate security violations table for validation system
-	if err := db.AutoMigrate(&domain.SecurityViolation{}); err != nil {
-		return fmt.Errorf("failed to migrate security_violations table: %w", err)
-	}
-
-	// CB-182: Migrate validation rules table for validation system
-	if err := db.AutoMigrate(&domain.ValidationRule{}); err != nil {
-		return fmt.Errorf("failed to migrate validation_rules table: %w", err)
-	}
-
-	// LGPD User Deletion: Migrate deletion-related tables
-	if err := db.AutoMigrate(&domain.DeletionRequest{}); err != nil {
-		return fmt.Errorf("failed to migrate deletion_requests table: %w", err)
-	}
-
-	if err := db.AutoMigrate(&domain.UserDataExport{}); err != nil {
-		return fmt.Errorf("failed to migrate user_data_exports table: %w", err)
-	}
-
-	if err := db.AutoMigrate(&domain.DeletionAuditLog{}); err != nil {
-		return fmt.Errorf("failed to migrate deletion_audit_logs table: %w", err)
-	}
-
-	if err := db.AutoMigrate(&domain.DataRetentionPolicy{}); err != nil {
-		return fmt.Errorf("failed to migrate data_retention_policies table: %w", err)
-	}
-
-	if err := db.AutoMigrate(&domain.AnonymizedUser{}); err != nil {
-		return fmt.Errorf("failed to migrate anonymized_users table: %w", err)
+	for _, model := range Models() {
+		if err := db.AutoMigrate(model); err != nil {
+			return fmt.Errorf("failed to migrate %T: %w", model, err)
+		}
 	}
 
 	// Initialize Casbin GORM adapter tables

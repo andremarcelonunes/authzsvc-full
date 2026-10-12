@@ -44,6 +44,19 @@ func WithPasswordChangePolicy(policy domain.PasswordPolicy) PasswordChangeOption
 	return func(s *PasswordChangeService) { s.passwordPolicy = &policy }
 }
 
+// otpKeepVerifier is implemented by the OTP service: check a code without consuming it, consume later.
+type otpKeepVerifier interface {
+	VerifyKeep(ctx context.Context, phone, code string, userID uint) (bool, error)
+	Consume(ctx context.Context, phone string, userID uint)
+}
+
+// cleanupHistory trims old password history; a failure is logged, never silent.
+func (s *PasswordChangeService) cleanupHistory(ctx context.Context, userID uint) {
+	if err := s.passwordHistoryRepo.CleanupOldHistory(ctx, userID, s.config.PasswordHistoryCount); err != nil {
+		log.Printf("Warning: failed to clean up password history of user %d: %v", userID, err)
+	}
+}
+
 // WithPasswordChangeOTPDigester makes the service store only a keyed digest of the one-time codes it
 // keeps in the password change / forgot password request rows. Without it codes are stored as before.
 func WithPasswordChangeOTPDigester(d *OTPDigester) PasswordChangeOption {
@@ -382,7 +395,7 @@ func (s *PasswordChangeService) CompletePasswordChange(ctx context.Context, user
 	s.deleteTemporaryPasswordHash(requestID)
 
 	// Clean up old password history
-	s.passwordHistoryRepo.CleanupOldHistory(ctx, userID, s.config.PasswordHistoryCount)
+	s.cleanupHistory(ctx, userID)
 
 	// Audit successful password change completion
 	if s.auditService != nil {
@@ -457,7 +470,17 @@ func (s *PasswordChangeService) ResetPasswordByPhone(ctx context.Context, phone,
 	if user == nil {
 		return nil, domain.ErrResetCodeInvalid
 	}
-	if ok, err := s.otpService.Verify(ctx, user.Phone, code, user.ID); err != nil || !ok {
+	// The code is checked but consumed only once the password is changed: a failure in between
+	// (history table, database) leaves the code usable instead of costing another SMS.
+	keep, canKeep := s.otpService.(otpKeepVerifier)
+	var ok bool
+	var verr error
+	if canKeep {
+		ok, verr = keep.VerifyKeep(ctx, user.Phone, code, user.ID)
+	} else {
+		ok, verr = s.otpService.Verify(ctx, user.Phone, code, user.ID)
+	}
+	if verr != nil || !ok {
 		return nil, domain.ErrResetCodeInvalid
 	}
 
@@ -479,10 +502,13 @@ func (s *PasswordChangeService) ResetPasswordByPhone(ctx context.Context, phone,
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return nil, fmt.Errorf("failed to update user password: %w", err)
 	}
+	if canKeep {
+		keep.Consume(ctx, user.Phone, user.ID) // the password is changed: the code is spent
+	}
 	if err := s.sessionRepo.DeleteAllForUser(ctx, user.ID); err != nil {
 		log.Printf("Warning: Failed to invalidate sessions for user %d: %v", user.ID, err)
 	}
-	s.passwordHistoryRepo.CleanupOldHistory(ctx, user.ID, s.config.PasswordHistoryCount)
+	s.cleanupHistory(ctx, user.ID)
 	if s.auditService != nil {
 		_ = s.auditService.LogSystemEvent(ctx, "password_reset_by_phone",
 			fmt.Sprintf("Password reset by phone for user %d", user.ID),
@@ -649,7 +675,7 @@ func (s *PasswordChangeService) CompleteForgotPassword(ctx context.Context, requ
 	}
 
 	// Clean up old password history
-	s.passwordHistoryRepo.CleanupOldHistory(ctx, *request.UserID, s.config.PasswordHistoryCount)
+	s.cleanupHistory(ctx, *request.UserID)
 
 	return &domain.PasswordChangeResponse{
 		RequestID: requestID,
