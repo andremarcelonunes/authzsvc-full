@@ -15,6 +15,7 @@ type MockAuthService struct {
 	RefreshTokenFunc   func(ctx context.Context, refreshToken string) (*domain.AuthResult, error)
 	LogoutFunc         func(ctx context.Context, sessionID string) error
 	GetUserProfileFunc func(ctx context.Context, userID uint) (*domain.User, error)
+	AddProfileFunc     func(ctx context.Context, userID uint, add string) (*domain.User, error)
 	AuthenticateUserFunc func(ctx context.Context, request *domain.AuthRequest) (*domain.AuthResult, error) // CB-194
 }
 
@@ -127,6 +128,14 @@ func (m *MockAuthService) GetUserProfile(ctx context.Context, userID uint) (*dom
 		CreatedAt:     time.Now().Add(-24 * time.Hour),
 		UpdatedAt:     time.Now(),
 	}, nil
+}
+
+// AddProfile adds the client or contact profile to a user's own account
+func (m *MockAuthService) AddProfile(ctx context.Context, userID uint, add string) (*domain.User, error) {
+	if m.AddProfileFunc != nil {
+		return m.AddProfileFunc(ctx, userID, add)
+	}
+	return &domain.User{ID: userID, Role: add, IsActive: true}, nil
 }
 
 // AuthenticateUser implements domain.AuthService for CB-194

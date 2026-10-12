@@ -603,6 +603,10 @@ func (s *ComprehensiveAuditServiceImpl) LogSystemEvent(ctx context.Context, even
 
 // LogUserRegistrationEvent implements domain.ComprehensiveAuditService
 func (s *ComprehensiveAuditServiceImpl) LogUserRegistrationEvent(ctx context.Context, userID uint, email, phone, role string) error {
+	description := "Successfully registered user without email"
+	if email != "" {
+		description = fmt.Sprintf("Successfully registered user with email %s", email)
+	}
 	auditEvent := &domain.ComprehensiveAuditEvent{
 		EventType:     "user_registration_success",
 		EventCategory: domain.CategoryAuthentication,
@@ -611,7 +615,7 @@ func (s *ComprehensiveAuditServiceImpl) LogUserRegistrationEvent(ctx context.Con
 		IPAddress:     "127.0.0.1", // Default IP for registration events
 		Success:       true,
 		Action:        "user_registration",
-		ErrorDetails:  fmt.Sprintf("Successfully registered user with email %s", email),
+		ErrorDetails:  description,
 		Metadata: toJSON(map[string]interface{}{
 			"email": email,
 			"phone": phone,

@@ -11,6 +11,7 @@ func TestIsRoleAllowedForPublicRegistration(t *testing.T) {
 		RoleRoot:      false,
 		RoleAdmin:     false,
 		RoleAttendant: false,
+		RoleClientContact: false,
 		"moderator":   false,
 		"Admin":       false,
 		"unknown":     false,
@@ -47,8 +48,8 @@ func TestIsKnownRole(t *testing.T) {
 // Every creator role x every target role.
 func TestCanCreateRole_Matrix(t *testing.T) {
 	allowed := map[string]map[string]bool{
-		RoleRoot:  {RoleAdmin: true, RoleAttendant: true, RoleClient: true, RoleContact: true, RoleUser: true},
-		RoleAdmin: {RoleAttendant: true, RoleClient: true, RoleContact: true, RoleUser: true},
+		RoleRoot:  {RoleAdmin: true, RoleAttendant: true, RoleClient: true, RoleContact: true, RoleUser: true, RoleClientContact: true},
+		RoleAdmin: {RoleAttendant: true, RoleClient: true, RoleContact: true, RoleUser: true, RoleClientContact: true},
 	}
 	creators := append(AllRoles(), "moderator", "")
 	targets := append(AllRoles(), "moderator", "")

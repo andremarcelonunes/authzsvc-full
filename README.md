@@ -2505,6 +2505,7 @@ role_manager, /team/:id/*, *, path.id==token.managed_team || token.role==admin
 | `POST` | `/auth/login` | User login | No | `LoginRequest` | JWT tokens + user info |
 | `POST` | `/auth/refresh` | Refresh tokens | Refresh Token | `RefreshRequest` | New JWT tokens |
 | `POST` | `/auth/logout` | Logout user | Access Token | None | Success message |
+| `POST` | `/auth/roles` | Add the `client` or `contact` profile to your own account (`{"add":"client"}`); `client`+`contact` becomes `client_contact`. 403 for any other transition; the new role reaches tokens at the next refresh/login | Access Token | `add` | Updated role |
 | `GET` | `/auth/me` | Get current user | Access Token | None | User profile |
 | `GET` | `/auth/verify` | **Verify JWT token for microservices** | Bearer Token | None | Token validation status |
 | `POST` | `/auth/otp/send` | Send OTP SMS | No | Phone + User ID | Success message |
@@ -2946,6 +2947,15 @@ OTP_TTL=5m                      # OTP validity period
 OTP_LENGTH=6                    # OTP code length
 OTP_MAX_ATTEMPTS=5              # Maximum verification attempts
 OTP_RESEND_WINDOW=60s           # Minimum time between OTP sends
+
+# Registration switches (phone-first mobile apps). Both default to true = strict behaviour.
+# yaml: registration.{require_email,require_phone_verification}; the environment wins over the file.
+REQUIRE_REGISTRATION_EMAIL=true   # false: e-mail optional at POST /auth/register and POST /admin/users
+                                  #        (an e-mail that is sent is still validated; stored as NULL when absent;
+                                  #         the phone then is the only identifier and must be unique)
+REQUIRE_PHONE_VERIFICATION=true   # false: unverified users can log in, registration sends no OTP and never fails
+                                  #        on OTP sending; /auth/otp/* keeps working. Access tokens always carry
+                                  #        the phone_verified claim (token.phone_verified in gateway rules)
 
 # Twilio SMS Configuration
 TWILIO_ACCOUNT_SID=your_account_sid

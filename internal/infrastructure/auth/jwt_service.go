@@ -35,16 +35,24 @@ func (j *JWTServiceImpl) generateJTI() string {
 }
 
 // GenerateAccessToken implements domain.TokenService
+// The token carries no phone and phone_verified=false; use GenerateUserAccessToken to set them.
 func (j *JWTServiceImpl) GenerateAccessToken(userID uint, role string, sessionID string) (string, error) {
+	return j.GenerateUserAccessToken(userID, role, sessionID, "", false)
+}
+
+// GenerateUserAccessToken implements domain.TokenService
+func (j *JWTServiceImpl) GenerateUserAccessToken(userID uint, role string, sessionID string, phone string, phoneVerified bool) (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
-		"user_id":    userID,
-		"role":       role,
-		"session_id": sessionID,
-		"iss":        j.issuer,
-		"iat":        now.Unix(),
-		"exp":        now.Add(j.accessTokenTTL).Unix(),
-		"jti":        j.generateJTI(), // Unique JWT ID ensures token uniqueness
+		"user_id":        userID,
+		"role":           role,
+		"session_id":     sessionID,
+		"phone_verified": phoneVerified,
+		"phone":          phone,
+		"iss":            j.issuer,
+		"iat":            now.Unix(),
+		"exp":            now.Add(j.accessTokenTTL).Unix(),
+		"jti":            j.generateJTI(), // Unique JWT ID ensures token uniqueness
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -131,6 +139,15 @@ func (j *JWTServiceImpl) validateToken(tokenString string) (*domain.TokenClaims,
 		Role:      role,
 		IssuedAt:  int64(iat),
 		ExpiresAt: int64(exp),
+	}
+
+	// phone_verified is absent from tokens issued before the claim existed (and from refresh
+	// tokens): anything but a boolean true counts as not verified, never as an error.
+	if verified, ok := claims["phone_verified"].(bool); ok {
+		tokenClaims.PhoneVerified = verified
+	}
+	if phone, ok := claims["phone"].(string); ok {
+		tokenClaims.Phone = phone
 	}
 
 	// Extract session ID if present (for refresh tokens)

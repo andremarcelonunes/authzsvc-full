@@ -58,6 +58,7 @@ static_resources:
                     patterns:
                     - exact: "x-user-id"
                     - exact: "x-user-role"
+                    - exact: "x-user-phone"
                     - exact: "x-backend-user-id"
               # Optional: lets field rules such as body.author_id==token.user_id work.
               with_request_body:

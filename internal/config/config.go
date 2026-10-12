@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -104,6 +105,23 @@ type IdentityBackendConfig struct {
 // DefaultIdentityBackendTimeout is used when no timeout is configured.
 const DefaultIdentityBackendTimeout = 2 * time.Second
 
+// RegistrationFileConfig is the optional "registration" section. Both keys are optional;
+// an absent key keeps the strict default (true).
+type RegistrationFileConfig struct {
+	RequireEmail             *bool `yaml:"require_email"`
+	RequirePhoneVerification *bool `yaml:"require_phone_verification"`
+}
+
+// RegistrationConfig holds the two switches that relax the sign-up / login rules for
+// phone-first clients. Both default to true (strict behaviour).
+type RegistrationConfig struct {
+	// RequireEmail: when false, e-mail is optional at registration (REQUIRE_REGISTRATION_EMAIL).
+	RequireEmail bool
+	// RequirePhoneVerification: when false, unverified users may log in and registration sends
+	// no OTP (REQUIRE_PHONE_VERIFICATION).
+	RequirePhoneVerification bool
+}
+
 type ConfigFile struct {
 	App        AppConfig        `yaml:"app"`
 	Database   DatabaseConfig   `yaml:"database"`
@@ -116,6 +134,7 @@ type ConfigFile struct {
 	Bootstrap  BootstrapConfig  `yaml:"bootstrap"`
 
 	IdentityBackend IdentityBackendFileConfig `yaml:"identity_backend"`
+	Registration    RegistrationFileConfig    `yaml:"registration"`
 }
 
 type Config struct {
@@ -148,6 +167,9 @@ type Config struct {
 
 	// IdentityBackend configures the backend id translation API; environment overrides config file
 	IdentityBackend IdentityBackendConfig
+
+	// Registration switches (REQUIRE_REGISTRATION_EMAIL, REQUIRE_PHONE_VERIFICATION); environment overrides config file
+	Registration RegistrationConfig
 }
 
 func env(k, def string) string {
@@ -206,6 +228,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	registration, err := loadRegistrationConfig(configFile.Registration)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		Port:             fmt.Sprintf("%d", configFile.App.Port),
 		DSN:              configFile.Database.DSN,
@@ -230,6 +257,7 @@ func Load() (*Config, error) {
 		ValidationConfig: validationConfig,
 		Bootstrap:        loadBootstrapConfig(configFile.Bootstrap),
 		IdentityBackend:  identityBackend,
+		Registration:     registration,
 	}, nil
 }
 
@@ -266,6 +294,36 @@ func loadIdentityBackendConfig(fromFile IdentityBackendFileConfig) (IdentityBack
 		cfg.Timeout = d
 	}
 	return cfg, nil
+}
+
+// loadRegistrationConfig applies the REQUIRE_REGISTRATION_EMAIL and REQUIRE_PHONE_VERIFICATION
+// environment variables over the optional registration section. Each switch defaults to true.
+func loadRegistrationConfig(fromFile RegistrationFileConfig) (RegistrationConfig, error) {
+	requireEmail, err := resolveBoolSwitch("REQUIRE_REGISTRATION_EMAIL", fromFile.RequireEmail)
+	if err != nil {
+		return RegistrationConfig{}, err
+	}
+	requirePhone, err := resolveBoolSwitch("REQUIRE_PHONE_VERIFICATION", fromFile.RequirePhoneVerification)
+	if err != nil {
+		return RegistrationConfig{}, err
+	}
+	return RegistrationConfig{RequireEmail: requireEmail, RequirePhoneVerification: requirePhone}, nil
+}
+
+// resolveBoolSwitch returns the environment value of name when set, else the file value, else true.
+// An unparsable environment value is an error (a typo must not silently keep or drop a safeguard).
+func resolveBoolSwitch(name string, fromFile *bool) (bool, error) {
+	if raw := os.Getenv(name); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return false, fmt.Errorf("invalid value for %s: expected true or false", name)
+		}
+		return v, nil
+	}
+	if fromFile != nil {
+		return *fromFile, nil
+	}
+	return true, nil
 }
 
 func loadConfigFile(path string) (*ConfigFile, error) {

@@ -41,6 +41,10 @@ type EmailValidationConfig struct {
 	BlockedDomains    []string
 	RequireVerification bool
 	MaxLength         int
+	// Optional makes the e-mail optional at registration (REQUIRE_REGISTRATION_EMAIL=false):
+	// an empty e-mail skips the e-mail rules and the e-mail uniqueness check, while an e-mail that
+	// IS sent is validated as usual. The default (false) requires a valid e-mail.
+	Optional bool
 }
 
 // PhoneValidationConfig defines phone validation rules
@@ -91,7 +95,9 @@ func NewBusinessValidationService(
 
 	// Set default email validation if not provided
 	if config.EmailValidation.MaxLength == 0 {
+		emailOptional := config.EmailValidation.Optional
 		config.EmailValidation = EmailValidationConfig{
+			Optional:            emailOptional,
 			AllowedDomains:      []string{}, // Empty means allow all
 			BlockedDomains:      []string{"tempmail.com", "10minutemail.com", "guerrillamail.com"},
 			RequireVerification: true,
@@ -133,9 +139,14 @@ func (s *BusinessValidationServiceImpl) ValidateRegistrationRules(ctx context.Co
 		RulesApplied: 0,
 	}
 
+	// An absent e-mail is accepted only when the e-mail is optional (REQUIRE_REGISTRATION_EMAIL=false)
+	emailAbsent := email == "" && s.emailValidation.Optional
+
 	// Validate email business rules
-	if err := s.validateEmailRules(email, result); err != nil {
-		return nil, fmt.Errorf("email validation failed: %w", err)
+	if !emailAbsent {
+		if err := s.validateEmailRules(email, result); err != nil {
+			return nil, fmt.Errorf("email validation failed: %w", err)
+		}
 	}
 
 	// Validate phone business rules
@@ -154,7 +165,9 @@ func (s *BusinessValidationServiceImpl) ValidateRegistrationRules(ctx context.Co
 	}
 
 	// Check for existing user with same email
-	if existingUser, err := s.userRepo.FindByEmail(ctx, email); err == nil && existingUser != nil {
+	if emailAbsent {
+		// nothing to look up: an empty e-mail never identifies a user
+	} else if existingUser, err := s.userRepo.FindByEmail(ctx, email); err == nil && existingUser != nil {
 		result.IsValid = false
 		result.Passed = false
 		result.Errors = append(result.Errors, domain.ValidationError{

@@ -20,17 +20,44 @@ type AuthHandlers struct {
 	userRepo    domain.UserRepository
 	tokenSvc    domain.TokenService
 	sessionRepo domain.SessionRepository
+
+	// requireRegistrationEmail is REQUIRE_REGISTRATION_EMAIL (default true: e-mail is mandatory).
+	requireRegistrationEmail bool
+	// requirePhoneVerification is REQUIRE_PHONE_VERIFICATION (default true); it only changes
+	// the message returned by registration, the rule itself lives in the services.
+	requirePhoneVerification bool
+}
+
+// AuthHandlersOption customises AuthHandlers at construction.
+type AuthHandlersOption func(*AuthHandlers)
+
+// WithRequireRegistrationEmail sets whether registration (public and admin) requires an e-mail.
+// The default is true.
+func WithRequireRegistrationEmail(required bool) AuthHandlersOption {
+	return func(h *AuthHandlers) { h.requireRegistrationEmail = required }
+}
+
+// WithRequirePhoneVerification sets whether registration tells the user to verify the phone.
+// The default is true.
+func WithRequirePhoneVerification(required bool) AuthHandlersOption {
+	return func(h *AuthHandlers) { h.requirePhoneVerification = required }
 }
 
 // NewAuthHandlers creates new auth handlers
-func NewAuthHandlers(authSvc domain.AuthService, otpSvc domain.OTPService, userRepo domain.UserRepository, tokenSvc domain.TokenService, sessionRepo domain.SessionRepository) *AuthHandlers {
-	return &AuthHandlers{
-		authSvc:     authSvc,
-		otpSvc:      otpSvc,
-		userRepo:    userRepo,
-		tokenSvc:    tokenSvc,
-		sessionRepo: sessionRepo,
+func NewAuthHandlers(authSvc domain.AuthService, otpSvc domain.OTPService, userRepo domain.UserRepository, tokenSvc domain.TokenService, sessionRepo domain.SessionRepository, opts ...AuthHandlersOption) *AuthHandlers {
+	h := &AuthHandlers{
+		authSvc:                  authSvc,
+		otpSvc:                   otpSvc,
+		userRepo:                 userRepo,
+		tokenSvc:                 tokenSvc,
+		sessionRepo:              sessionRepo,
+		requireRegistrationEmail: true,
+		requirePhoneVerification: true,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // RegisterRequest represents registration request
@@ -39,6 +66,29 @@ type RegisterRequest struct {
 	Phone    string `json:"phone" binding:"required"`
 	Password string `json:"password" binding:"required,min=6"`
 	Role     string `json:"role,omitempty"` // Optional role field, defaults to "user"
+}
+
+// registerRequestOptionalEmail is RegisterRequest when REQUIRE_REGISTRATION_EMAIL=false: the e-mail
+// may be missing or empty, but an e-mail that is sent must still be valid.
+type registerRequestOptionalEmail struct {
+	Email    string `json:"email" binding:"omitempty,email"`
+	Phone    string `json:"phone" binding:"required"`
+	Password string `json:"password" binding:"required,min=6"`
+	Role     string `json:"role,omitempty"`
+}
+
+// bindRegisterRequest binds the registration body with the e-mail rule selected by the switch.
+func (h *AuthHandlers) bindRegisterRequest(c *gin.Context) (RegisterRequest, error) {
+	if h.requireRegistrationEmail {
+		var req RegisterRequest
+		err := c.ShouldBindJSON(&req)
+		return req, err
+	}
+	var relaxed registerRequestOptionalEmail
+	if err := c.ShouldBindJSON(&relaxed); err != nil {
+		return RegisterRequest{}, err
+	}
+	return RegisterRequest(relaxed), nil
 }
 
 // LoginRequest represents login request - CB-194: Extended for unified authentication
@@ -67,8 +117,8 @@ type RefreshRequest struct {
 
 // Register handles user registration
 func (h *AuthHandlers) Register(c *gin.Context) {
-	var req RegisterRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	req, err := h.bindRegisterRequest(c)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -107,9 +157,13 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 		return
 	}
 
+	message := "User registered successfully."
+	if h.requirePhoneVerification {
+		message = "User registered successfully. Please verify your phone number."
+	}
 	c.JSON(http.StatusCreated, gin.H{
 		"data": gin.H{
-			"message": "User registered successfully. Please verify your phone number.",
+			"message": message,
 			"user_id": user.ID,
 		},
 	})
@@ -153,12 +207,29 @@ type AdminCreateUserRequest struct {
 	Role     string `json:"role" binding:"required"`
 }
 
+// adminCreateUserRequestOptionalEmail is AdminCreateUserRequest when REQUIRE_REGISTRATION_EMAIL=false.
+type adminCreateUserRequestOptionalEmail struct {
+	Email    string `json:"email" binding:"omitempty,email"`
+	Phone    string `json:"phone" binding:"required"`
+	Password string `json:"password" binding:"required,min=6"`
+	Role     string `json:"role" binding:"required"`
+}
+
 // AdminCreateUser handles POST /admin/users: root/admin create accounts for other roles.
 // The creator's identity and role come from the validated JWT (set by the auth middleware).
 // Which role may create which is enforced by the service (domain.CanCreateRole).
 func (h *AuthHandlers) AdminCreateUser(c *gin.Context) {
 	var req AdminCreateUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var err error
+	if h.requireRegistrationEmail {
+		err = c.ShouldBindJSON(&req)
+	} else {
+		var relaxed adminCreateUserRequestOptionalEmail
+		if err = c.ShouldBindJSON(&relaxed); err == nil {
+			req = AdminCreateUserRequest(relaxed)
+		}
+	}
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -194,11 +265,15 @@ func (h *AuthHandlers) AdminCreateUser(c *gin.Context) {
 		return
 	}
 
+	message := "User created successfully."
+	if h.requirePhoneVerification {
+		message = "User created successfully. The user must verify their phone number."
+	}
 	c.JSON(http.StatusCreated, gin.H{
 		"data": gin.H{
 			"user_id": user.ID,
 			"role":    user.Role,
-			"message": "User created successfully. The user must verify their phone number.",
+			"message": message,
 		},
 	})
 }
@@ -506,6 +581,55 @@ func (h *AuthHandlers) Me(c *gin.Context) {
 	})
 }
 
+// AddRoleRequest is the body of POST /auth/roles.
+type AddRoleRequest struct {
+	// Add is the profile to add to the caller's own account: "client" or "contact".
+	Add string `json:"add" binding:"required"`
+}
+
+// roleTransitionNotAllowedMessage is the client-facing message for domain.ErrRoleTransitionNotAllowed (HTTP 403).
+const roleTransitionNotAllowedMessage = "This profile cannot be added to your account"
+
+// AddRole handles POST /auth/roles: the authenticated user adds the client or contact profile to
+// their own account. The transition rule is domain.NextRoleOnAddProfile (enforced by the service).
+// The new role reaches tokens at the next refresh or login.
+func (h *AuthHandlers) AddRole(c *gin.Context) {
+	var req AddRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userIDStr, _ := c.Get("user_id")
+	idStr, _ := userIDStr.(string)
+	userID, parseErr := strconv.ParseUint(idStr, 10, 32)
+	if parseErr != nil || userID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
+	user, err := h.authSvc.AddProfile(c.Request.Context(), uint(userID), req.Add)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrRoleTransitionNotAllowed), errors.Is(err, domain.ErrUserInactive):
+			c.JSON(http.StatusForbidden, gin.H{"error": roleTransitionNotAllowedMessage})
+		case errors.Is(err, domain.ErrUserNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update role"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": gin.H{
+			"user_id": user.ID,
+			"role":    user.Role,
+			"message": "Role updated. Refresh your token to receive the new role.",
+		},
+	})
+}
+
 // Logout handles user logout (requires authentication)
 func (h *AuthHandlers) Logout(c *gin.Context) {
 	// Get session ID from context (set by auth middleware)
@@ -641,6 +765,7 @@ func (h *AuthHandlers) VerifyToken(c *gin.Context) {
 			"session_id": claims.SessionID,
 			"issued_at":  claims.IssuedAt,
 			"expires_at": claims.ExpiresAt,
+			"phone_verified": claims.PhoneVerified,
 		},
 	})
 }

@@ -17,6 +17,8 @@ var (
 	ErrRegistrationValidationFailed = errors.New("registration validation failed")
 	// ErrRoleCreationNotAllowed is returned when the creator's role may not create an account with the requested role.
 	ErrRoleCreationNotAllowed = errors.New("creator role is not allowed to create this role")
+	// ErrRoleTransitionNotAllowed is returned when a user asks to add a profile their current role may not take.
+	ErrRoleTransitionNotAllowed = errors.New("role transition not allowed")
 )
 
 // OTP errors

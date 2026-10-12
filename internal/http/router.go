@@ -61,6 +61,7 @@ func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers,
 	v.Use(cb.Enforce()) // Casbin enforcement last
 	v.GET("/auth/me", ah.Me)
 	v.POST("/auth/logout", ah.Logout)
+	v.POST("/auth/roles", ah.AddRole) // add the client/contact profile to the caller's own account
 	v.GET("/users/:id", func(c *gin.Context) {
 		userID := c.Param("id")
 		currentUserID, _ := c.Get("user_id")

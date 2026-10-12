@@ -31,6 +31,22 @@ type AuthServiceImpl struct {
 	identifierResolver domain.IdentifierResolutionService
 	emailAuthStrategy  domain.AuthenticationStrategy
 	phoneAuthStrategy  domain.AuthenticationStrategy
+
+	// phoneVerification is the single REQUIRE_PHONE_VERIFICATION switch (default: strict).
+	phoneVerification domain.PhoneVerificationPolicy
+}
+
+// AuthServiceOption customises an AuthServiceImpl at construction.
+type AuthServiceOption func(*AuthServiceImpl)
+
+// WithPhoneVerificationPolicy sets the phone verification policy. The default is
+// domain.StrictPhoneVerification(): unverified users cannot log in and registration sends an OTP.
+func WithPhoneVerificationPolicy(policy domain.PhoneVerificationPolicy) AuthServiceOption {
+	return func(s *AuthServiceImpl) {
+		if policy != nil {
+			s.phoneVerification = policy
+		}
+	}
 }
 
 // NewAuthService creates a new auth service
@@ -47,8 +63,9 @@ func NewAuthService(
 	identifierResolver domain.IdentifierResolutionService,
 	emailAuthStrategy domain.AuthenticationStrategy,
 	phoneAuthStrategy domain.AuthenticationStrategy,
+	opts ...AuthServiceOption,
 ) domain.AuthService {
-	return &AuthServiceImpl{
+	svc := &AuthServiceImpl{
 		userRepo:           userRepo,
 		sessionRepo:        sessionRepo,
 		passwordSvc:        passwordSvc,
@@ -61,7 +78,12 @@ func NewAuthService(
 		identifierResolver: identifierResolver,
 		emailAuthStrategy:  emailAuthStrategy,
 		phoneAuthStrategy:  phoneAuthStrategy,
+		phoneVerification:  domain.StrictPhoneVerification(),
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // Register implements domain.AuthService (public, unauthenticated registration).
@@ -129,6 +151,14 @@ func (s *AuthServiceImpl) createUserAccount(ctx context.Context, endpoint string
 		}
 	}
 
+	// Phone is the only identifier of a user without e-mail and the database has no unique index
+	// on it, so uniqueness is enforced here (also when no request validator is wired).
+	if phone != "" {
+		if existing, err := s.userRepo.FindByPhone(ctx, phone); err == nil && existing != nil {
+			return nil, domain.ErrUserAlreadyExists
+		}
+	}
+
 	// Hash password before transaction
 	hashedPassword, err := s.passwordSvc.Hash(password)
 	if err != nil {
@@ -169,7 +199,7 @@ func (s *AuthServiceImpl) createUserAccount(ctx context.Context, endpoint string
 				metadata["created_by_role"] = creator.Role
 			}
 			s.auditSvc.LogSystemEvent(ctx, "user_registration_failed",
-				fmt.Sprintf("Failed to register user with email %s", email),
+				registrationFailureDescription(email),
 				metadata)
 		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
@@ -196,13 +226,24 @@ func (s *AuthServiceImpl) createUserAccount(ctx context.Context, endpoint string
 		}
 	}
 
-	// Generate and send OTP
-	_, err = s.otpSvc.Generate(ctx, phone, user.ID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send OTP: %w", err)
+	// Generate and send OTP only when phone verification is required; otherwise registration
+	// never depends on (or fails because of) OTP sending or throttling.
+	if s.phoneVerification.RequiresPhoneVerification() {
+		_, err = s.otpSvc.Generate(ctx, phone, user.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to send OTP: %w", err)
+		}
 	}
 
 	return user, nil
+}
+
+// registrationFailureDescription describes a failed registration without an empty e-mail.
+func registrationFailureDescription(email string) string {
+	if email == "" {
+		return "Failed to register user without email"
+	}
+	return fmt.Sprintf("Failed to register user with email %s", email)
 }
 
 // Login implements domain.AuthService
@@ -249,8 +290,8 @@ func (s *AuthServiceImpl) Login(ctx context.Context, email, password string) (*d
 		return nil, domain.ErrUserInactive
 	}
 
-	// Check if phone is verified
-	if !user.PhoneVerified {
+	// Check if phone is verified (REQUIRE_PHONE_VERIFICATION)
+	if s.phoneVerification.ShouldEnforceVerification(user) {
 		// Log failed login attempt - phone not verified - CB-183
 		if s.auditSvc != nil {
 			s.auditSvc.LogLoginAttempt(ctx, user.ID, email, "", false, "phone not verified")
@@ -280,7 +321,7 @@ func (s *AuthServiceImpl) Login(ctx context.Context, email, password string) (*d
 	}
 
 	// Generate tokens
-	accessToken, err := s.tokenSvc.GenerateAccessToken(user.ID, user.Role, session.ID)
+	accessToken, err := s.tokenSvc.GenerateUserAccessToken(user.ID, user.Role, session.ID, user.Phone, user.PhoneVerified)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
@@ -384,7 +425,7 @@ func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.
 	}
 	
 	// Generate tokens
-	accessToken, err := s.tokenSvc.GenerateAccessToken(user.ID, user.Role, session.ID)
+	accessToken, err := s.tokenSvc.GenerateUserAccessToken(user.ID, user.Role, session.ID, user.Phone, user.PhoneVerified)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
@@ -523,7 +564,7 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 	}
 
 	// Generate new access token with enhanced error context
-	accessToken, err := s.tokenSvc.GenerateAccessToken(user.ID, user.Role, session.ID)
+	accessToken, err := s.tokenSvc.GenerateUserAccessToken(user.ID, user.Role, session.ID, user.Phone, user.PhoneVerified)
 	if err != nil {
 		return nil, fmt.Errorf("access token generation failed for user %d (session %s): %w", user.ID, session.ID, err)
 	}
@@ -551,6 +592,46 @@ func (s *AuthServiceImpl) Logout(ctx context.Context, sessionID string) error {
 // GetUserProfile implements domain.AuthService
 func (s *AuthServiceImpl) GetUserProfile(ctx context.Context, userID uint) (*domain.User, error) {
 	return s.userRepo.FindByID(ctx, userID)
+}
+
+// AddProfile implements domain.AuthService: the user adds the client or contact profile to their
+// own account. The role rule is domain.NextRoleOnAddProfile; the new role is read from and written
+// to the database, so the next refresh or login issues a token with it.
+func (s *AuthServiceImpl) AddProfile(ctx context.Context, userID uint, add string) (*domain.User, error) {
+	user, err := s.userRepo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !user.IsActive {
+		return nil, domain.ErrUserInactive
+	}
+
+	newRole, err := domain.NextRoleOnAddProfile(user.Role, add)
+	if err != nil {
+		return nil, err
+	}
+	if newRole == user.Role {
+		return user, nil // profile already held: no-op, nothing to persist or audit
+	}
+
+	oldRole := user.Role
+	user.Role = newRole
+	user.UpdatedAt = time.Now()
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return nil, fmt.Errorf("failed to update role: %w", err)
+	}
+
+	if s.auditSvc != nil {
+		_ = s.auditSvc.LogSystemEvent(ctx, domain.EventTypeRoleChange,
+			fmt.Sprintf("User %d added profile %s (%s -> %s)", user.ID, add, oldRole, newRole),
+			map[string]interface{}{
+				"user_id":  user.ID,
+				"old_role": oldRole,
+				"new_role": newRole,
+				"added":    add,
+			})
+	}
+	return user, nil
 }
 
 // acquireLock attempts to acquire a distributed lock using Redis

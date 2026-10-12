@@ -18,6 +18,7 @@ func EnsureStandardPolicies(e *casbin.Enforcer) error {
 		// Basic user permissions
 		{"role_user", "/auth/me", "GET", "*"},
 		{"role_user", "/auth/logout", "POST", "*"},
+		{"role_user", "/auth/roles", "POST", "*"}, // add the client/contact profile to one's own account
 		{"role_user", "/auth/otp/*", "POST", "*"},
 		{"role_user", "/users/*", "GET", "path.id==token.user_id"},
 
@@ -69,6 +70,9 @@ func EnsureStandardPolicies(e *casbin.Enforcer) error {
 		{"role_client", "role_user"},
 		{"role_contact", "role_user"},
 		{"role_attendant", "role_user"},
+		// Dual role: a client and a contact at once inherits the policies of both
+		{"role_client_contact", "role_client"},
+		{"role_client_contact", "role_contact"},
 	}
 	for _, g := range standardGroupings {
 		hasInheritance, _ := e.HasGroupingPolicy(g[0], g[1])

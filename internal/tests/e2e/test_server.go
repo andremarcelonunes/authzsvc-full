@@ -55,12 +55,30 @@ func NewTestServer(t *testing.T, suite *TestSuite) *TestServer {
 // external authz handlers (nil = not configured).
 func NewTestServerWithResolver(t *testing.T, suite *TestSuite, resolver domain.BackendIdentityResolver) *TestServer {
 	t.Helper()
+	return NewTestServerWithOptions(t, suite, resolver, DefaultServerOptions())
+}
+
+// ServerOptions are the registration switches of the test server (config REQUIRE_REGISTRATION_EMAIL
+// and REQUIRE_PHONE_VERIFICATION).
+type ServerOptions struct {
+	RequireRegistrationEmail bool
+	RequirePhoneVerification bool
+}
+
+// DefaultServerOptions is the strict production default: e-mail required, phone verification required.
+func DefaultServerOptions() ServerOptions {
+	return ServerOptions{RequireRegistrationEmail: true, RequirePhoneVerification: true}
+}
+
+// NewTestServerWithOptions is NewTestServerWithResolver with explicit registration switches.
+func NewTestServerWithOptions(t *testing.T, suite *TestSuite, resolver domain.BackendIdentityResolver, opts ServerOptions) *TestServer {
+	t.Helper()
 
 	// Set Gin to test mode
 	gin.SetMode(gin.TestMode)
 
 	// Create router with test dependencies
-	router, err := createTestRouter(suite, resolver)
+	router, err := createTestRouter(suite, resolver, opts)
 	if err != nil {
 		t.Fatalf("Failed to create test router: %v", err)
 	}
@@ -97,7 +115,7 @@ func NewTestServerWithResolver(t *testing.T, suite *TestSuite, resolver domain.B
 }
 
 // createTestRouter initializes the router with test dependencies
-func createTestRouter(suite *TestSuite, resolver domain.BackendIdentityResolver) (*gin.Engine, error) {
+func createTestRouter(suite *TestSuite, resolver domain.BackendIdentityResolver, opts ServerOptions) (*gin.Engine, error) {
 	// Clean up old format Casbin policies from database first
 	// This prevents "invalid policy rule size" errors from old 3-column policies
 	suite.DB.Exec("DELETE FROM casbin_rule")
@@ -168,14 +186,18 @@ func createTestRouter(suite *TestSuite, resolver domain.BackendIdentityResolver)
 
 	// Initialize CB-194 dependencies for unified authentication
 	identifierResolver := services.NewIdentifierResolutionService()
-	emailAuthStrategy := services.NewEmailAuthStrategy(userRepo, passwordSvc, identifierResolver)
-	phoneAuthStrategy := services.NewPhoneAuthStrategy(userRepo, passwordSvc, identifierResolver)
+	phoneVerification := domain.PhoneVerificationRule{Required: opts.RequirePhoneVerification}
+	emailAuthStrategy := services.NewEmailAuthStrategy(userRepo, passwordSvc, identifierResolver, services.WithStrategyPhoneVerificationPolicy(phoneVerification))
+	phoneAuthStrategy := services.NewPhoneAuthStrategy(userRepo, passwordSvc, identifierResolver, services.WithStrategyPhoneVerificationPolicy(phoneVerification))
 
 	// Initialize auth service with audit logging and CB-194 support
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis, requestValidator, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy)
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis, requestValidator, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy, services.WithPhoneVerificationPolicy(phoneVerification))
 
 	// Initialize handlers
-	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo, tokenSvc, sessionRepo)
+	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo, tokenSvc, sessionRepo,
+		handlers.WithRequireRegistrationEmail(opts.RequireRegistrationEmail),
+		handlers.WithRequirePhoneVerification(opts.RequirePhoneVerification),
+	)
 	polH := &handlers.PolicyHandlers{E: cas.E}
 	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E, resolver)
 
@@ -234,6 +256,7 @@ func createTestRouter(suite *TestSuite, resolver domain.BackendIdentityResolver)
 	cas.E.AddPolicy("role_user", "/auth/me", "GET", "*")
 	cas.E.AddPolicy("role_user", "/auth/logout", "POST", "*")
 	cas.E.AddPolicy("role_user", "/auth/otp/*", "POST", "*")
+	cas.E.AddPolicy("role_user", "/auth/roles", "POST", "*")
 
 	// Define admin-specific permissions
 	cas.E.AddPolicy("role_admin", "/admin/*", "(GET|POST|PUT|DELETE)", "*")
@@ -246,6 +269,8 @@ func createTestRouter(suite *TestSuite, resolver domain.BackendIdentityResolver)
 	cas.E.AddGroupingPolicy("role_client", "role_user")
 	cas.E.AddGroupingPolicy("role_contact", "role_user")
 	cas.E.AddGroupingPolicy("role_attendant", "role_user")
+	cas.E.AddGroupingPolicy("role_client_contact", "role_client")
+	cas.E.AddGroupingPolicy("role_client_contact", "role_contact")
 
 	// Save all policies to database
 	_ = cas.E.SavePolicy()
