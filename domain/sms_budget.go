@@ -152,3 +152,34 @@ func ValidateSMSBrand(brand string) error {
 	}
 	return nil
 }
+
+// MinSMSTestPrefixDigits keeps a typo such as "+55" from silencing SMS for a whole country.
+const MinSMSTestPrefixDigits = 8
+
+// ParseSMSTestPhonePrefixes parses SMS_TEST_PHONE_PREFIXES: a comma-separated list of E.164 prefixes,
+// each "+" followed by at least 8 digits. Empty means no test numbers. An invalid entry is an error.
+func ParseSMSTestPhonePrefixes(raw string) ([]string, error) {
+	var prefixes []string
+	seen := map[string]bool{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		digits := strings.TrimPrefix(entry, "+")
+		valid := strings.HasPrefix(entry, "+") && len(digits) >= MinSMSTestPrefixDigits
+		for _, r := range digits {
+			if r < '0' || r > '9' {
+				valid = false
+			}
+		}
+		if !valid {
+			return nil, fmt.Errorf("invalid test phone prefix %q: expected \"+\" followed by at least %d digits", entry, MinSMSTestPrefixDigits)
+		}
+		if !seen[entry] {
+			seen[entry] = true
+			prefixes = append(prefixes, entry)
+		}
+	}
+	return prefixes, nil
+}

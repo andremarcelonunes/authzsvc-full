@@ -27,6 +27,16 @@ func WithLogMessages(on bool) Option {
 	return func(t *TwilioServiceImpl) { t.logMessages = on }
 }
 
+// logMockSMS is the mock path: nothing is sent. The message (code included) is logged only when full
+// is true (OTP_LOG_CODES); otherwise only that a message was generated, for a masked phone.
+func logMockSMS(to, message string, full bool) {
+	if full {
+		log.Printf("[MOCK SMS] To: %s, Message: %s", to, message)
+		return
+	}
+	log.Printf("[MOCK SMS] a message was generated for %s and not sent: no SMS provider configured (OTP_LOG_CODES=true prints it)", maskPhone(to))
+}
+
 // maskPhone keeps the first three and last two characters: +55*******00.
 func maskPhone(phone string) string {
 	if len(phone) <= 6 {
@@ -59,11 +69,7 @@ func (t *TwilioServiceImpl) Live() bool { return t.fromNumber != "" }
 func (t *TwilioServiceImpl) SendSMS(to, message string) error {
 	// If credentials are not configured, log instead of sending
 	if t.fromNumber == "" {
-		if t.logMessages {
-			log.Printf("[MOCK SMS] To: %s, Message: %s", to, message)
-		} else {
-			log.Printf("[MOCK SMS] a message was generated for %s and not sent: no SMS provider configured (OTP_LOG_CODES=true prints it)", maskPhone(to))
-		}
+		logMockSMS(to, message, t.logMessages)
 		return nil
 	}
 
