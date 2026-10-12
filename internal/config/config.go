@@ -175,6 +175,16 @@ type SelfDeletionConfig struct {
 	RequirePassword bool
 }
 
+// SMSBudgetFileConfig is the optional "sms_budget" section; every key is optional (defaults: domain.DefaultSMSLimits).
+type SMSBudgetFileConfig struct {
+	MaxPerPhonePerDay    *int   `yaml:"max_per_phone_per_day"`
+	MaxPerPhonePer30Days *int   `yaml:"max_per_phone_per_30_days"`
+	MinIntervalPerPhone  string `yaml:"min_interval_per_phone"`
+	MaxPerIPPerDay       *int   `yaml:"max_per_ip_per_day"`
+	GlobalDailyCap       *int   `yaml:"global_daily_cap"`
+	GlobalMonthlyCap     *int   `yaml:"global_monthly_cap"`
+}
+
 // Bounds accepted for PASSWORD_MIN_LENGTH and the registration rate limit settings.
 const (
 	MinAllowedPasswordMinLength = 4
@@ -199,6 +209,7 @@ type ConfigFile struct {
 	Registration    RegistrationFileConfig    `yaml:"registration"`
 	Password        PasswordFileConfig        `yaml:"password"`
 	SelfDeletion    SelfDeletionFileConfig    `yaml:"self_deletion"`
+	SMSBudget       SMSBudgetFileConfig       `yaml:"sms_budget"`
 }
 
 type Config struct {
@@ -243,6 +254,9 @@ type Config struct {
 
 	// OTPLogCodes (OTP_LOG_CODES, default false): let the mock SMS path (no provider configured) log the code. Never in production.
 	OTPLogCodes bool
+
+	// SMSBudget bounds the SMS sent (SMS_* variables, "sms_budget" section); strict defaults.
+	SMSBudget domain.SMSLimits
 }
 
 func env(k, def string) string {
@@ -321,6 +335,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	smsBudget, err := loadSMSBudgetConfig(configFile.SMSBudget)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		Port:             fmt.Sprintf("%d", configFile.App.Port),
 		DSN:              configFile.Database.DSN,
@@ -349,6 +368,7 @@ func Load() (*Config, error) {
 		Password:         password,
 		SelfDeletion:     selfDeletion,
 		OTPLogCodes:      otpLogCodes,
+		SMSBudget:        smsBudget,
 	}, nil
 }
 
@@ -494,6 +514,47 @@ func loadSelfDeletionConfig(fromFile SelfDeletionFileConfig) (SelfDeletionConfig
 		minAge = d
 	}
 	return SelfDeletionConfig{Immediate: immediate, MinAccountAge: minAge, RequirePassword: requirePassword}, nil
+}
+
+// loadSMSBudgetConfig applies the SMS_* environment variables over the optional sms_budget section
+// over domain.DefaultSMSLimits. Caps must be at least 1 (a zero cap would silently disable SMS);
+// the minimum interval may be 0.
+func loadSMSBudgetConfig(f SMSBudgetFileConfig) (domain.SMSLimits, error) {
+	limits := domain.DefaultSMSLimits()
+	ints := []struct {
+		env  string
+		file *int
+		dst  *int
+	}{
+		{"SMS_MAX_PER_PHONE_PER_DAY", f.MaxPerPhonePerDay, &limits.MaxPerPhonePerDay},
+		{"SMS_MAX_PER_PHONE_PER_30_DAYS", f.MaxPerPhonePer30Days, &limits.MaxPerPhonePer30Days},
+		{"SMS_MAX_PER_IP_PER_DAY", f.MaxPerIPPerDay, &limits.MaxPerIPPerDay},
+		{"SMS_GLOBAL_DAILY_CAP", f.GlobalDailyCap, &limits.GlobalDailyCap},
+		{"SMS_GLOBAL_MONTHLY_CAP", f.GlobalMonthlyCap, &limits.GlobalMonthlyCap},
+	}
+	for _, in := range ints {
+		if in.file != nil {
+			*in.dst = *in.file
+		}
+		if raw := os.Getenv(in.env); raw != "" {
+			v, err := strconv.Atoi(raw)
+			if err != nil {
+				return limits, fmt.Errorf("invalid value for %s: expected an integer", in.env)
+			}
+			*in.dst = v
+		}
+		if *in.dst < 1 {
+			return limits, fmt.Errorf("invalid %s %d: must be at least 1", in.env, *in.dst)
+		}
+	}
+	if raw := env("SMS_MIN_INTERVAL_PER_PHONE", f.MinIntervalPerPhone); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < 0 {
+			return limits, fmt.Errorf("invalid SMS_MIN_INTERVAL_PER_PHONE %q: expected a non-negative duration such as 2m", raw)
+		}
+		limits.MinIntervalPerPhone = d
+	}
+	return limits, nil
 }
 
 // resolveBoolSwitchDefaultFalse is resolveBoolSwitch for switches that are off unless enabled.

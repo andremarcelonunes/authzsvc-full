@@ -3,6 +3,8 @@ package config
 import (
 	"testing"
 	"time"
+
+	"github.com/you/authzsvc/domain"
 )
 
 func TestLoadSelfDeletionConfig_DefaultsKeepTodaysBehaviour(t *testing.T) {
@@ -85,5 +87,53 @@ func TestOTPLogCodesSwitchDefaultsToFalse(t *testing.T) {
 	t.Setenv("OTP_LOG_CODES", "true")
 	if v, _ := resolveBoolSwitchDefaultFalse("OTP_LOG_CODES", nil); !v {
 		t.Error("OTP_LOG_CODES=true must switch it on")
+	}
+}
+
+func TestLoadSMSBudgetConfig(t *testing.T) {
+	got, err := loadSMSBudgetConfig(SMSBudgetFileConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := domain.SMSLimits{MaxPerPhonePerDay: 2, MaxPerPhonePer30Days: 5, MinIntervalPerPhone: 2 * time.Minute, MaxPerIPPerDay: 5, GlobalDailyCap: 100, GlobalMonthlyCap: 1000}
+	if got != want {
+		t.Errorf("defaults must be the strict ones: %+v", got)
+	}
+
+	one, ten := 1, 10
+	got, err = loadSMSBudgetConfig(SMSBudgetFileConfig{MaxPerPhonePerDay: &ten, GlobalDailyCap: &one, MinIntervalPerPhone: "30s"})
+	if err != nil || got.MaxPerPhonePerDay != 10 || got.GlobalDailyCap != 1 || got.MinIntervalPerPhone != 30*time.Second || got.GlobalMonthlyCap != 1000 {
+		t.Errorf("file values must apply over the defaults: %+v %v", got, err)
+	}
+
+	t.Setenv("SMS_MAX_PER_PHONE_PER_DAY", "3")
+	t.Setenv("SMS_MAX_PER_PHONE_PER_30_DAYS", "7")
+	t.Setenv("SMS_MIN_INTERVAL_PER_PHONE", "0")
+	t.Setenv("SMS_MAX_PER_IP_PER_DAY", "9")
+	t.Setenv("SMS_GLOBAL_DAILY_CAP", "11")
+	t.Setenv("SMS_GLOBAL_MONTHLY_CAP", "12")
+	got, err = loadSMSBudgetConfig(SMSBudgetFileConfig{MaxPerPhonePerDay: &ten})
+	want = domain.SMSLimits{MaxPerPhonePerDay: 3, MaxPerPhonePer30Days: 7, MinIntervalPerPhone: 0, MaxPerIPPerDay: 9, GlobalDailyCap: 11, GlobalMonthlyCap: 12}
+	if err != nil || got != want {
+		t.Errorf("env must override file: %+v %v", got, err)
+	}
+}
+
+func TestLoadSMSBudgetConfig_Invalid(t *testing.T) {
+	for env, value := range map[string]string{
+		"SMS_MAX_PER_PHONE_PER_DAY":  "0",
+		"SMS_GLOBAL_DAILY_CAP":       "-1",
+		"SMS_GLOBAL_MONTHLY_CAP":     "many",
+		"SMS_MIN_INTERVAL_PER_PHONE": "soon",
+	} {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv(env, value)
+			if _, err := loadSMSBudgetConfig(SMSBudgetFileConfig{}); err == nil {
+				t.Errorf("%s=%s must be rejected (a zero cap would silently disable SMS)", env, value)
+			}
+		})
+	}
+	if _, err := loadSMSBudgetConfig(SMSBudgetFileConfig{MinIntervalPerPhone: "-1m"}); err == nil {
+		t.Error("a negative interval must be rejected")
 	}
 }

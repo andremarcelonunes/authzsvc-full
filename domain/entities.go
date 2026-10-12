@@ -72,6 +72,8 @@ type OTPRequest struct {
 	UserID    uint
 	ExpiresAt time.Time
 	Attempts  int
+	// AlreadySent: a still-valid code was already out, nothing was sent now and Code is empty.
+	AlreadySent bool
 }
 
 // Session represents a user session

@@ -45,6 +45,7 @@ func EnsureStandardPolicies(e *casbin.Enforcer) error {
 		// Admin LGPD deletion management permissions
 		{"role_admin", "/admin/users/deletion/*/process", "POST", "*"},     // Process deletion requests
 		{"role_admin", "/admin/users/deletion/pending", "GET", "*"},        // List pending deletions
+		{"role_admin", "/admin/sms/usage", "GET", "*"},                      // SMS sent today / this month
 
 		// Other roles from policies.csv
 		{"role_attendant", "/auth/me", "GET", "*"},

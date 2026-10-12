@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -9,6 +10,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/you/authzsvc/domain"
+	"github.com/you/authzsvc/internal/infrastructure/notifications"
+	"github.com/you/authzsvc/internal/infrastructure/smsbudget"
 	"github.com/you/authzsvc/internal/mocks"
 )
 
@@ -20,7 +23,9 @@ func newWeaknessOTP(t *testing.T) (domain.OTPService, *miniredis.Miniredis, *sms
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { rdb.Close() })
 	sms := &smsBox{}
-	otp := NewOTPService(sms, mocks.NewMockUserRepository(), rdb, OTPConfig{Length: 6, TTL: 5 * time.Minute, MaxAttempts: 3, ResendWindow: 60 * time.Second})
+	// The notifier is wrapped with the budget at default (strict) limits, as in production.
+	notifier := notifications.NewBudgetedNotifier(sms, smsbudget.NewRedisBudget(rdb, domain.DefaultSMSLimits(), "test-secret"))
+	otp := NewOTPService(notifier, mocks.NewMockUserRepository(), rdb, OTPConfig{Length: 6, TTL: 5 * time.Minute, MaxAttempts: 3, ResendWindow: 60 * time.Second})
 	return otp, mr, sms
 }
 
@@ -39,6 +44,14 @@ func TestSMSWeakness_RepeatedRequestWhileCodeValidSendsNothing(t *testing.T) {
 	if sms.count() != 1 {
 		t.Errorf("only one SMS may go out while the code is valid and the minimum interval has not passed, got %d", sms.count())
 	}
+	// Past the 2 minute minimum interval a resend is allowed (the per-phone budget has room).
+	mr.FastForward(2 * time.Minute)
+	if req, err := otp.Generate(ctx, "+5511999990000", 7); err != nil || req.AlreadySent {
+		t.Errorf("a resend after the minimum interval must go out: %+v %v", req, err)
+	}
+	if sms.count() != 2 {
+		t.Errorf("expected the resend, got %d SMS", sms.count())
+	}
 }
 
 // A phone must not receive more than 2 SMS in a day, all asking spaced out past every existing window.
@@ -49,8 +62,11 @@ func TestSMSWeakness_NoPerPhoneDailyCap(t *testing.T) {
 		_, _ = otp.Generate(ctx, "+5511999990000", 7)
 		mr.FastForward(6 * time.Minute) // the code expired, the resend window passed
 	}
-	if sms.count() > 2 {
+	if sms.count() != 2 {
 		t.Errorf("a phone got %d SMS in 30 minutes; the daily cap is 2", sms.count())
+	}
+	if _, err := otp.Generate(ctx, "+5511999990000", 7); !errors.As(err, new(*domain.SMSLimitError)) {
+		t.Errorf("past the cap the request must fail with an SMSLimitError, got %v", err)
 	}
 }
 
@@ -61,7 +77,7 @@ func TestSMSWeakness_NoPerIPCap(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		_, _ = otp.Generate(ctx, fmt.Sprintf("+55119999900%02d", i), uint(100+i))
 	}
-	if sms.count() > 5 {
+	if sms.count() != 5 {
 		t.Errorf("one address triggered %d SMS; the cap is 5 a day", sms.count())
 	}
 }

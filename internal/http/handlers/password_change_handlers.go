@@ -70,6 +70,9 @@ func (h *PasswordChangeHandlers) InitiatePasswordChange(c *gin.Context) {
 		userAgent,
 	)
 	if err != nil {
+		if respondSMSError(c, err) {
+			return
+		}
 		statusCode := getPasswordErrorStatusCode(err)
 		c.JSON(statusCode, gin.H{
 			"error":   getPasswordErrorCode(err),
@@ -394,7 +397,7 @@ func (h *PasswordChangeHandlers) initiatePhoneReset(c *gin.Context) {
 		return
 	}
 	response, err := h.passwordChangeService.InitiateForgotPasswordByPhone(
-		c.Request.Context(), req.Email, req.Phone)
+		domain.WithClientIP(c.Request.Context(), c.ClientIP()), req.Email, req.Phone)
 	if err != nil {
 		statusCode := getPasswordErrorStatusCode(err)
 		c.JSON(statusCode, gin.H{

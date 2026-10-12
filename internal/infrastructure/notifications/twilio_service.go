@@ -52,6 +52,9 @@ func NewTwilioService(accountSID, authToken, fromNumber string, opts ...Option) 
 	return svc
 }
 
+// Live reports whether a real provider is configured; the mock path is not live and costs nothing.
+func (t *TwilioServiceImpl) Live() bool { return t.fromNumber != "" }
+
 // SendSMS implements domain.NotificationService
 func (t *TwilioServiceImpl) SendSMS(to, message string) error {
 	// If credentials are not configured, log instead of sending
@@ -62,6 +65,10 @@ func (t *TwilioServiceImpl) SendSMS(to, message string) error {
 			log.Printf("[MOCK SMS] a message was generated for %s and not sent: no SMS provider configured (OTP_LOG_CODES=true prints it)", maskPhone(to))
 		}
 		return nil
+	}
+
+	if to == "" {
+		return fmt.Errorf("%w: empty destination", domain.ErrSMSNotSent) // nothing reached the provider
 	}
 
 	params := &twilioApi.CreateMessageParams{}

@@ -14,6 +14,7 @@ import (
 	"github.com/you/authzsvc/internal/infrastructure/auth"
 	"github.com/you/authzsvc/internal/infrastructure/database"
 	"github.com/you/authzsvc/internal/infrastructure/identity"
+	"github.com/you/authzsvc/internal/infrastructure/smsbudget"
 	"github.com/you/authzsvc/internal/infrastructure/notifications"
 	"github.com/you/authzsvc/internal/infrastructure/repositories"
 	"github.com/you/authzsvc/internal/infrastructure/validation"
@@ -50,7 +51,11 @@ func Run(cfg *config.Config) error {
 	// Initialize infrastructure services
 	passwordSvc := auth.NewPasswordService()
 	tokenSvc := auth.NewJWTService(cfg.JWTSecret, cfg.JWTIssuer, cfg.AccessTTL, cfg.RefreshTTL)
-	notificationSvc := notifications.NewTwilioService(cfg.TwilioSID, cfg.TwilioToken, cfg.TwilioFrom, notifications.WithLogMessages(cfg.OTPLogCodes))
+	// Every SMS goes through the budget (caps per phone, per caller and for the installation; fail closed).
+	smsBudget := smsbudget.NewRedisBudget(rdb, cfg.SMSBudget, cfg.JWTSecret)
+	notificationSvc := notifications.NewBudgetedNotifier(
+		notifications.NewTwilioService(cfg.TwilioSID, cfg.TwilioToken, cfg.TwilioFrom, notifications.WithLogMessages(cfg.OTPLogCodes)),
+		smsBudget)
 
 	// Initialize repositories
 	userRepo := repositories.NewUserRepository(gdb)
@@ -321,6 +326,9 @@ func Run(cfg *config.Config) error {
 
 	// Build router with CB-182 validation middleware and LGPD deletion handlers
 	r := httpx.BuildRouterWithDeletion(authH, polH, externalAuthzH, docsH, passwordChangeH, userDeletionH, jwtMW, casbinMW, validationMW)
+
+	// Admin: SMS accepted by the provider today / this month (no phone numbers)
+	r.GET("/admin/sms/usage", jwtMW.WithJWT(), casbinMW.Enforce(), handlers.NewSMSUsageHandler(smsBudget).Usage)
 
 	if err := EnsureStandardPolicies(cas.E); err != nil {
 		return err

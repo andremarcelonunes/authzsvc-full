@@ -3,7 +3,9 @@ package services
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"time"
 
@@ -55,14 +57,57 @@ func NewOTPService(notificationSvc domain.NotificationService, userRepo domain.U
 	}
 }
 
-// Generate implements domain.OTPService with Redis persistence
+// smsSender is implemented by the budgeted notifier: it takes the request context (caller address).
+type smsSender interface {
+	SendSMSContext(ctx context.Context, to, message string) error
+}
+
+func (s *OTPServiceImpl) sendSMS(ctx context.Context, to, message string) error {
+	if sender, ok := s.notificationSvc.(smsSender); ok {
+		return sender.SendSMSContext(ctx, to, message)
+	}
+	return s.notificationSvc.SendSMS(to, message)
+}
+
+// OTPMessage is the SMS text of a code. Every text is a single GSM-7 segment: no accented letters
+// outside the GSM-7 alphabet (so no a-acute, a-circumflex, tilde, i-acute, o-acute, u-acute, e-circumflex,
+// o-circumflex), and well under 160 characters.
+func OTPMessage(purpose domain.OTPPurpose, code string, ttl time.Duration) string {
+	minutes := int(ttl.Minutes())
+	if minutes < 1 {
+		minutes = 1
+	}
+	switch purpose {
+	case domain.OTPPurposePasswordReset:
+		return fmt.Sprintf("Eldery: codigo para redefinir a senha %s. Valido por %d min. Nao compartilhe.", code, minutes)
+	case domain.OTPPurposePasswordChange:
+		return fmt.Sprintf("Eldery: codigo para confirmar a troca de senha %s. Valido por %d min. Nao compartilhe.", code, minutes)
+	default:
+		return fmt.Sprintf("Eldery: codigo de verificacao %s. Valido por %d min. Nao compartilhe.", code, minutes)
+	}
+}
+
+// Generate implements domain.OTPService with Redis persistence.
+//
+// While a still-valid code is out, asking again answers like a fresh request but sends nothing
+// (AlreadySent), unless the resend window and the SMS budget's minimum interval have both passed
+// and every cap allows another SMS. The code is stored only after the SMS was accepted, so a
+// refused resend never destroys the valid code.
 func (s *OTPServiceImpl) Generate(ctx context.Context, phone string, userID uint) (*domain.OTPRequest, error) {
 	otpKey := fmt.Sprintf("otp:%s:%d", phone, userID)
 	resendKey := fmt.Sprintf("otp:res:%s", phone)
 	attemptsKey := fmt.Sprintf("otp:att:%s:%d", phone, userID)
 
+	validCodeOut, err := s.redisClient.Exists(ctx, otpKey).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to check OTP in Redis: %w", err)
+	}
+
 	// Check resend throttle
 	if canResend, waitTime, _ := s.CanResend(ctx, phone); !canResend {
+		if validCodeOut == 1 {
+			return s.alreadySent(ctx, otpKey, phone, userID), nil
+		}
 		return nil, &otpResendThrottledError{waitSeconds: waitTime}
 	}
 
@@ -72,39 +117,44 @@ func (s *OTPServiceImpl) Generate(ctx context.Context, phone string, userID uint
 		return nil, fmt.Errorf("failed to generate OTP code: %w", err)
 	}
 
-	// Store OTP in Redis with TTL
+	// Send SMS notification (the budget is consulted inside the notifier)
+	message := OTPMessage(domain.OTPPurposeFrom(ctx), code, s.config.TTL)
+	if err := s.sendSMS(ctx, phone, message); err != nil {
+		var limit *domain.SMSLimitError
+		if validCodeOut == 1 && (errors.As(err, &limit) || errors.Is(err, domain.ErrSMSUnavailable)) {
+			log.Printf("OTP resend for user %d not sent, valid code still out: %v", userID, err)
+			return s.alreadySent(ctx, otpKey, phone, userID), nil
+		}
+		return nil, fmt.Errorf("failed to send OTP SMS: %w", err)
+	}
+
+	// Store only the digest, reset attempts, start the resend window
 	if err := s.redisClient.Set(ctx, otpKey, s.digester.Digest(otpKey, code), s.config.TTL).Err(); err != nil {
 		return nil, fmt.Errorf("failed to store OTP in Redis: %w", err)
 	}
-
-	// Initialize attempts counter
 	if err := s.redisClient.Set(ctx, attemptsKey, 0, s.config.TTL).Err(); err != nil {
 		return nil, fmt.Errorf("failed to initialize attempts counter: %w", err)
 	}
-
-	// Set resend throttle
 	if err := s.redisClient.Set(ctx, resendKey, 1, s.config.ResendWindow).Err(); err != nil {
 		return nil, fmt.Errorf("failed to set resend throttle: %w", err)
 	}
 
-	// Create OTP request object for response
-	otpReq := &domain.OTPRequest{
+	return &domain.OTPRequest{
 		Phone:     phone,
 		Code:      code,
 		UserID:    userID,
 		ExpiresAt: time.Now().Add(s.config.TTL),
 		Attempts:  0,
-	}
+	}, nil
+}
 
-	// Send SMS notification
-	message := fmt.Sprintf("Your verification code is: %s. Valid for %d minutes.", code, int(s.config.TTL.Minutes()))
-	if err := s.notificationSvc.SendSMS(phone, message); err != nil {
-		// Clean up Redis entries if SMS fails
-		s.redisClient.Del(ctx, otpKey, attemptsKey, resendKey)
-		return nil, fmt.Errorf("failed to send OTP SMS: %w", err)
+// alreadySent is the answer for a request that sent nothing because a valid code is already out.
+func (s *OTPServiceImpl) alreadySent(ctx context.Context, otpKey, phone string, userID uint) *domain.OTPRequest {
+	expires := time.Now().Add(s.config.TTL)
+	if ttl, err := s.redisClient.TTL(ctx, otpKey).Result(); err == nil && ttl > 0 {
+		expires = time.Now().Add(ttl)
 	}
-
-	return otpReq, nil
+	return &domain.OTPRequest{Phone: phone, UserID: userID, ExpiresAt: expires, AlreadySent: true}
 }
 
 // Verify implements domain.OTPService with Redis persistence

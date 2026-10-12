@@ -12,6 +12,7 @@ import (
 	"github.com/you/authzsvc/internal/infrastructure/auth"
 	"github.com/you/authzsvc/internal/infrastructure/notifications"
 	"github.com/you/authzsvc/internal/infrastructure/repositories"
+	"github.com/you/authzsvc/internal/infrastructure/smsbudget"
 	"github.com/you/authzsvc/internal/services"
 )
 
@@ -116,11 +117,14 @@ func (c *Container) initServices() error {
 		c.Config.AccessTTL,
 		c.Config.RefreshTTL,
 	)
-	c.NotificationSvc = notifications.NewTwilioService(
-		c.Config.TwilioSID,
-		c.Config.TwilioToken,
-		c.Config.TwilioFrom,
-		notifications.WithLogMessages(c.Config.OTPLogCodes),
+	c.NotificationSvc = notifications.NewBudgetedNotifier(
+		notifications.NewTwilioService(
+			c.Config.TwilioSID,
+			c.Config.TwilioToken,
+			c.Config.TwilioFrom,
+			notifications.WithLogMessages(c.Config.OTPLogCodes),
+		),
+		smsbudget.NewRedisBudget(c.RedisClient, c.Config.SMSBudget, c.Config.JWTSecret),
 	)
 
 	// Initialize audit service (CB-183)

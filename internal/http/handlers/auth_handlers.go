@@ -174,6 +174,10 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 		if respondRegistrationValidationError(c, err) {
 			return
 		}
+		if respondSMSError(c, err) {
+			// The user row was already created and is kept; the client retries /auth/otp/send later.
+			return
+		}
 		if errors.Is(err, domain.ErrOTPResendThrottled) {
 			// The user row was already created and is kept: a retry of /auth/register
 			// answers 409, so the client should call /auth/otp/send after waiting.
@@ -456,8 +460,18 @@ func (h *AuthHandlers) SendOTP(c *gin.Context) {
 		return
 	}
 
-	_, err = h.otpSvc.Generate(c.Request.Context(), req.Phone, req.UserID)
+	// "Only once": a verified phone is never sent a verification code again.
+	if user.PhoneVerified {
+		c.JSON(http.StatusConflict, gin.H{"error": "phone_already_verified", "message": "Phone number already verified"})
+		return
+	}
+
+	ctx := domain.WithClientIP(c.Request.Context(), c.ClientIP())
+	_, err = h.otpSvc.Generate(ctx, req.Phone, req.UserID)
 	if err != nil {
+		if respondSMSError(c, err) {
+			return
+		}
 		if errors.Is(err, domain.ErrOTPResendThrottled) {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": otpResendThrottledMessage})
 			return
