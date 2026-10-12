@@ -55,7 +55,11 @@ func Run(cfg *config.Config) error {
 	smsBudget := smsbudget.NewRedisBudget(rdb, cfg.SMSBudget, cfg.JWTSecret)
 	notificationSvc := notifications.NewBudgetedNotifier(
 		notifications.NewTwilioService(cfg.TwilioSID, cfg.TwilioToken, cfg.TwilioFrom, notifications.WithLogMessages(cfg.OTPLogCodes)),
-		smsBudget)
+		smsBudget,
+		notifications.WithTestPhonePrefixes(cfg.SMSTestPhonePrefixes, cfg.OTPLogCodes))
+	if n := len(cfg.SMSTestPhonePrefixes); n > 0 {
+		log.Printf("WARNING: %d SMS test phone prefix(es) configured (SMS_TEST_PHONE_PREFIXES): numbers with these prefixes never reach the SMS provider. This must be empty in production.", n)
+	}
 
 	// Initialize repositories
 	userRepo := repositories.NewUserRepository(gdb)

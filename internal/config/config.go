@@ -185,6 +185,7 @@ type SMSBudgetFileConfig struct {
 	MaxPerPhonePer30Days *int   `yaml:"max_per_phone_per_30_days"`
 	MinIntervalPerPhone  string `yaml:"min_interval_per_phone"`
 	Brand                string `yaml:"brand"` // SMS_BRAND
+	TestPhonePrefixes    string `yaml:"test_phone_prefixes"` // SMS_TEST_PHONE_PREFIXES, comma separated
 	MaxPerIPPerDay       *int   `yaml:"max_per_ip_per_day"`
 	GlobalDailyCap       *int   `yaml:"global_daily_cap"`
 	GlobalMonthlyCap     *int   `yaml:"global_monthly_cap"`
@@ -265,6 +266,10 @@ type Config struct {
 
 	// SMSBrand opens every code SMS (SMS_BRAND, default TocomVC); GSM-7 only, at most 11 characters.
 	SMSBrand string
+
+	// SMSTestPhonePrefixes (SMS_TEST_PHONE_PREFIXES, default empty = feature off): numbers with these E.164
+	// prefixes never reach the SMS provider nor consume budget. Must be empty in production.
+	SMSTestPhonePrefixes []string
 
 	// ClientIPHeader (CLIENT_IP_HEADER, yaml app.client_ip_header): the gateway header with the caller address; empty = TCP peer.
 	ClientIPHeader string
@@ -358,6 +363,10 @@ func Load() (*Config, error) {
 	if err := domain.ValidateSMSBrand(smsBrand); err != nil {
 		return nil, fmt.Errorf("invalid SMS_BRAND %q: %w", smsBrand, err)
 	}
+	testPrefixes, err := domain.ParseSMSTestPhonePrefixes(env("SMS_TEST_PHONE_PREFIXES", configFile.SMSBudget.TestPhonePrefixes))
+	if err != nil {
+		return nil, fmt.Errorf("invalid SMS_TEST_PHONE_PREFIXES: %w", err)
+	}
 	clientIPHeader, err := loadClientIPHeader(configFile.App.ClientIPHeader)
 	if err != nil {
 		return nil, err
@@ -393,6 +402,7 @@ func Load() (*Config, error) {
 		OTPLogCodes:      otpLogCodes,
 		SMSBudget:        smsBudget,
 		SMSBrand:         smsBrand,
+		SMSTestPhonePrefixes: testPrefixes,
 		ClientIPHeader:   clientIPHeader,
 	}, nil
 }

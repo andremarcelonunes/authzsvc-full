@@ -167,3 +167,18 @@ func TestValidateSMSBrand(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSMSTestPhonePrefixes(t *testing.T) {
+	if got, err := domain.ParseSMSTestPhonePrefixes(""); err != nil || len(got) != 0 {
+		t.Errorf("empty means the feature is off: %v %v", got, err)
+	}
+	got, err := domain.ParseSMSTestPhonePrefixes(" +55119999 , +15550001234,,+55119999")
+	if err != nil || len(got) != 2 || got[0] != "+55119999" || got[1] != "+15550001234" {
+		t.Errorf("trim, skip empties, dedupe: %v %v", got, err)
+	}
+	for _, bad := range []string{"+55", "+5511999", "5511999999", "+55 11999999", "+55119999a", "++5511999999", "+", "+55119999,+55", "abc"} {
+		if _, err := domain.ParseSMSTestPhonePrefixes(bad); err == nil {
+			t.Errorf("%q must be rejected", bad)
+		}
+	}
+}

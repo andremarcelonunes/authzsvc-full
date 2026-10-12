@@ -125,6 +125,7 @@ func (c *Container) initServices() error {
 			notifications.WithLogMessages(c.Config.OTPLogCodes),
 		),
 		smsbudget.NewRedisBudget(c.RedisClient, c.Config.SMSBudget, c.Config.JWTSecret),
+		notifications.WithTestPhonePrefixes(c.Config.SMSTestPhonePrefixes, c.Config.OTPLogCodes),
 	)
 
 	// Initialize audit service (CB-183)
