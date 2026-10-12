@@ -242,7 +242,7 @@ func (s *PasswordChangeService) InitiatePasswordChange(ctx context.Context, user
 	request.OTPCode = newPasswordHash // Temporarily store here
 
 	// Generate and send OTP
-	otpCode, err := s.generateAndSendOTP(ctx, domain.OTPPurposePasswordChange, ipAddress, user.Phone, user.ID)
+	otpCode, err := s.generateAndSendOTPFor(ctx, domain.OTPPurposePasswordChange, ipAddress, user.Phone, user.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send OTP: %w", err)
 	}
@@ -534,7 +534,7 @@ func (s *PasswordChangeService) InitiateForgotPassword(ctx context.Context, emai
 
 	// Only send OTP if user exists (but always return success message for security)
 	if userID != nil {
-		otpCode, err := s.generateAndSendOTP(ctx, domain.OTPPurposePasswordReset, ipAddress, phone, *userID)
+		otpCode, err := s.generateAndSendOTPFor(ctx, domain.OTPPurposePasswordReset, ipAddress, phone, *userID)
 		if err == nil {
 			otpExpiresAt := time.Now().Add(s.config.OTPTTL)
 			request.OTPCode = s.sealRequestCode(requestID, otpCode)
@@ -851,7 +851,12 @@ func (s *PasswordChangeService) generateRandomString(length int) string {
 	return hex.EncodeToString(bytes)
 }
 
-func (s *PasswordChangeService) generateAndSendOTP(ctx context.Context, purpose domain.OTPPurpose, ipAddress, phone string, userID uint) (string, error) {
+func (s *PasswordChangeService) generateAndSendOTP(ctx context.Context, phone string, userID uint) (string, error) {
+	return s.generateAndSendOTPFor(ctx, domain.OTPPurposePasswordChange, "", phone, userID)
+}
+
+// generateAndSendOTPFor asks the OTP service for a code for purpose, on behalf of the caller at ipAddress.
+func (s *PasswordChangeService) generateAndSendOTPFor(ctx context.Context, purpose domain.OTPPurpose, ipAddress, phone string, userID uint) (string, error) {
 	ctx = domain.WithClientIP(domain.WithOTPPurpose(ctx, purpose), ipAddress)
 	otpRequest, err := s.otpService.Generate(ctx, phone, userID)
 	if err != nil {

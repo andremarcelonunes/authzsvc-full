@@ -18,7 +18,7 @@ import (
 	"github.com/you/authzsvc/internal/services"
 )
 
-func postJSON(t *testing.T, r *gin.Engine, path, body string) *httptest.ResponseRecorder {
+func postRaw(t *testing.T, r *gin.Engine, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -81,7 +81,7 @@ func TestSendOTP_SMSLimitAnswers(t *testing.T) {
 			h := NewAuthHandlers(mocks.NewMockAuthService(), otp, userRepo, mocks.NewMockTokenService(), mocks.NewMockSessionRepository())
 			r := gin.New()
 			r.POST("/auth/otp/send", h.SendOTP)
-			tc.want(t, postJSON(t, r, "/auth/otp/send", `{"phone":"+5511999990000","user_id":7}`))
+			tc.want(t, postRaw(t, r, "/auth/otp/send", `{"phone":"+5511999990000","user_id":7}`))
 		})
 	}
 }
@@ -101,7 +101,7 @@ func TestSendOTP_VerifiedPhoneAnswers409AndPassesTheCallerAddress(t *testing.T) 
 	r := gin.New()
 	r.POST("/auth/otp/send", h.SendOTP)
 
-	w := postJSON(t, r, "/auth/otp/send", `{"phone":"+5511999990000","user_id":7}`)
+	w := postRaw(t, r, "/auth/otp/send", `{"phone":"+5511999990000","user_id":7}`)
 	if out := decode(t, w); w.Code != http.StatusConflict || out["error"] != "phone_already_verified" {
 		t.Errorf("a verified phone: %d %v", w.Code, out)
 	}
@@ -131,7 +131,7 @@ func TestRegister_SMSLimitAnswers(t *testing.T) {
 			h := NewAuthHandlers(authSvc, mocks.NewMockOTPService(), mocks.NewMockUserRepository(), mocks.NewMockTokenService(), mocks.NewMockSessionRepository(), WithRequireRegistrationEmail(false))
 			r := gin.New()
 			r.POST("/auth/register", h.Register)
-			tc.want(t, postJSON(t, r, "/auth/register", `{"phone":"+5511999990000","password":"Secret123!"}`))
+			tc.want(t, postRaw(t, r, "/auth/register", `{"phone":"+5511999990000","password":"Secret123!"}`))
 		})
 	}
 }
@@ -159,7 +159,7 @@ func TestPasswordChange_SMSLimitAnswers(t *testing.T) {
 			r := gin.New()
 			r.Use(func(c *gin.Context) { c.Set("user_id", uint(7)) })
 			r.POST("/password/change", h.InitiatePasswordChange)
-			tc.want(t, postJSON(t, r, "/password/change", `{"current_password":"oldpass","new_password":"newpass1","confirm_password":"newpass1"}`))
+			tc.want(t, postRaw(t, r, "/password/change", `{"current_password":"oldpass","new_password":"newpass1","confirm_password":"newpass1"}`))
 		})
 	}
 }

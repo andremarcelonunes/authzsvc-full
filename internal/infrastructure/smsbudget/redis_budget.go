@@ -54,10 +54,10 @@ return {0, 0}
 
 // releaseScript gives one reservation back; counters never go below zero.
 var releaseScript = redis.NewScript(`
-for i = 1, 5 do
+for _, i in ipairs({1, 2, 4, 5, 6}) do
   if (tonumber(redis.call('GET', KEYS[i]) or '0')) > 0 then redis.call('DECR', KEYS[i]) end
 end
-redis.call('DEL', KEYS[6])
+redis.call('DEL', KEYS[3])
 return 1
 `)
 
