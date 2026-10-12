@@ -45,6 +45,8 @@ type OTPConfig struct {
 	Length       int    `yaml:"length"`
 	MaxAttempts  int    `yaml:"max_attempts"`
 	ResendWindow string `yaml:"resend_window"`
+	// LogCodes: the no-SMS-provider mock path prints the message with the code (OTP_LOG_CODES). Default false.
+	LogCodes *bool `yaml:"log_codes"`
 }
 
 type TwilioConfig struct {
@@ -238,6 +240,9 @@ type Config struct {
 
 	// Self-deletion switches (SELF_DELETION_IMMEDIATE, SELF_DELETION_MIN_ACCOUNT_AGE, SELF_DELETION_REQUIRE_PASSWORD); environment overrides config file
 	SelfDeletion SelfDeletionConfig
+
+	// OTPLogCodes (OTP_LOG_CODES, default false): let the mock SMS path (no provider configured) log the code. Never in production.
+	OTPLogCodes bool
 }
 
 func env(k, def string) string {
@@ -311,6 +316,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	otpLogCodes, err := resolveBoolSwitchDefaultFalse("OTP_LOG_CODES", configFile.OTP.LogCodes)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		Port:             fmt.Sprintf("%d", configFile.App.Port),
 		DSN:              configFile.Database.DSN,
@@ -338,6 +348,7 @@ func Load() (*Config, error) {
 		Registration:     registration,
 		Password:         password,
 		SelfDeletion:     selfDeletion,
+		OTPLogCodes:      otpLogCodes,
 	}, nil
 }
 

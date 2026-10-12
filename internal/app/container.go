@@ -120,6 +120,7 @@ func (c *Container) initServices() error {
 		c.Config.TwilioSID,
 		c.Config.TwilioToken,
 		c.Config.TwilioFrom,
+		notifications.WithLogMessages(c.Config.OTPLogCodes),
 	)
 
 	// Initialize audit service (CB-183)
@@ -131,6 +132,7 @@ func (c *Container) initServices() error {
 		TTL:          c.Config.OTP_TTL,
 		MaxAttempts:  c.Config.OTP_MaxAttempts,
 		ResendWindow: c.Config.OTP_ResendWindow,
+		Secret:       c.Config.JWTSecret,
 	}
 	c.OTPSvc = services.NewOTPService(c.NotificationSvc, c.UserRepo, c.RedisClient, otpConfig)
 

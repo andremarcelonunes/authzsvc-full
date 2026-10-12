@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -422,7 +423,13 @@ func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.
 	if err != nil {
 		// Log failed authentication attempt - CB-183
 		if s.auditSvc != nil {
-			s.auditSvc.LogLoginAttempt(ctx, 0, identifier, clientIP, false, err.Error())
+			// The account the attempt was for, when the identifier resolved to one; 0 for an unknown identifier.
+			var failedUserID uint
+			var failure *domain.AuthFailureError
+			if errors.As(err, &failure) {
+				failedUserID = failure.UserID
+			}
+			s.auditSvc.LogLoginAttempt(ctx, failedUserID, identifier, clientIP, false, err.Error())
 		}
 		return nil, err
 	}

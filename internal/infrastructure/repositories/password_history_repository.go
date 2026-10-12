@@ -83,6 +83,12 @@ func (r *PasswordHistoryRepository) CleanupOldHistory(ctx context.Context, userI
 		Delete(&DBPasswordHistory{}).Error
 }
 
+// DeleteAllForUser removes every password history row of the user (account deletion).
+func (r *PasswordHistoryRepository) DeleteAllForUser(ctx context.Context, userID uint) (int64, error) {
+	result := r.db.WithContext(ctx).Where("user_id = ?", userID).Delete(&DBPasswordHistory{})
+	return result.RowsAffected, result.Error
+}
+
 // CountUserHistory counts password history entries for a user
 func (r *PasswordHistoryRepository) CountUserHistory(ctx context.Context, userID uint) (int64, error) {
 	var count int64

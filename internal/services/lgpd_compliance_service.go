@@ -490,6 +490,12 @@ func (s *LGPDComplianceService) checkPendingTransactions(ctx context.Context, us
 	return false, "", nil
 }
 
+// isDeletionFlowEvent reports whether the event was written by the deletion flow itself. It also covers
+// rows written by earlier releases (security category, action deletion_blocked).
+func isDeletionFlowEvent(event *domain.ComprehensiveAuditEvent) bool {
+	return strings.HasPrefix(event.Action, "deletion_") || strings.HasPrefix(event.EventType, "deletion_")
+}
+
 // checkSecurityIncidents verifies if there are recent security incidents
 func (s *LGPDComplianceService) checkSecurityIncidents(ctx context.Context, userID uint) (bool, string, error) {
 	// Check for security events in last 90 days
@@ -501,6 +507,9 @@ func (s *LGPDComplianceService) checkSecurityIncidents(ctx context.Context, user
 	}
 	
 	for _, event := range events {
+		if isDeletionFlowEvent(event) {
+			continue // our own record of a refused or processed deletion is not an incident
+		}
 		if event.Timestamp.After(cutoffDate) {
 			if event.EventCategory == domain.CategoryAuditSecurity ||
 			   strings.Contains(event.EventType, "security_") ||

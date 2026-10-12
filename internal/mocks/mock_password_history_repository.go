@@ -10,6 +10,7 @@ type MockPasswordHistoryRepository struct {
 	GetRecentPasswordsFunc func(ctx context.Context, userID uint, count int) ([]string, error)
 	CleanupOldHistoryFunc  func(ctx context.Context, userID uint, keepCount int) error
 	CountUserHistoryFunc   func(ctx context.Context, userID uint) (int64, error)
+	DeleteAllForUserFunc   func(ctx context.Context, userID uint) (int64, error)
 }
 
 // NewMockPasswordHistoryRepository creates a new mock password history repository
@@ -61,6 +62,13 @@ func (m *MockPasswordHistoryRepository) CleanupOldHistory(ctx context.Context, u
 func (m *MockPasswordHistoryRepository) CountUserHistory(ctx context.Context, userID uint) (int64, error) {
 	if m.CountUserHistoryFunc != nil {
 		return m.CountUserHistoryFunc(ctx, userID)
+	}
+	return 0, nil
+}
+// DeleteAllForUser removes the user's password history
+func (m *MockPasswordHistoryRepository) DeleteAllForUser(ctx context.Context, userID uint) (int64, error) {
+	if m.DeleteAllForUserFunc != nil {
+		return m.DeleteAllForUserFunc(ctx, userID)
 	}
 	return 0, nil
 }

@@ -59,17 +59,17 @@ func (s *EmailAuthStrategy) Authenticate(ctx context.Context, identifier, passwo
 
 	// Check if user account is active
 	if !user.IsActive {
-		return nil, domain.ErrUserInactive
+		return nil, &domain.AuthFailureError{UserID: user.ID, Err: domain.ErrUserInactive}
 	}
 
 	// Verify password
 	if !s.passwordService.Verify(user.PasswordHash, password) {
-		return nil, domain.ErrInvalidCredentials
+		return nil, &domain.AuthFailureError{UserID: user.ID, Err: domain.ErrInvalidCredentials}
 	}
 
 	// Check if phone is verified (required for all users)
 	if s.phoneVerification.ShouldEnforceVerification(user) {
-		return nil, domain.ErrPhoneNotVerified
+		return nil, &domain.AuthFailureError{UserID: user.ID, Err: domain.ErrPhoneNotVerified}
 	}
 
 	return user, nil

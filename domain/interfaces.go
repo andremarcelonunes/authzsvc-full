@@ -265,6 +265,8 @@ type PasswordHistoryRepository interface {
 	GetRecentPasswords(ctx context.Context, userID uint, count int) ([]string, error)
 	CleanupOldHistory(ctx context.Context, userID uint, keepCount int) error
 	CountUserHistory(ctx context.Context, userID uint) (int64, error)
+	// DeleteAllForUser removes every history row of the user and returns how many were removed.
+	DeleteAllForUser(ctx context.Context, userID uint) (int64, error)
 }
 
 // ForgotPasswordRepository defines forgot password request data access operations

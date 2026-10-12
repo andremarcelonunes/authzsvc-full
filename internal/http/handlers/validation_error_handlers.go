@@ -512,7 +512,7 @@ func (veh *ValidationErrorHandler) sanitizeErrorMessage(message string) string {
 }
 
 func (veh *ValidationErrorHandler) isSensitiveField(fieldName string) bool {
-	sensitiveFields := []string{"password", "token", "secret", "key", "auth", "credential"}
+	sensitiveFields := []string{"password", "token", "secret", "key", "auth", "credential", "otp", "code", "nonce"}
 	lowerFieldName := strings.ToLower(fieldName)
 	
 	for _, sensitive := range sensitiveFields {

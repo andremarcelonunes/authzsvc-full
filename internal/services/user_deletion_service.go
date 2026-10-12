@@ -232,7 +232,7 @@ func (s *UserDeletionService) RequestSelfDeletion(
 	}
 	if !canDelete {
 		// Audit the blocked deletion attempt
-		s.logSecurityViolation(ctx, "deletion_blocked", fmt.Sprintf("User deletion blocked: %s", blockedReason), userID)
+		s.logDeletionBlocked(ctx, fmt.Sprintf("User deletion blocked: %s", blockedReason), userID)
 		return nil, false, fmt.Errorf("deletion blocked: %s", blockedReason)
 	}
 
@@ -354,9 +354,12 @@ func (s *UserDeletionService) RequestSelfDeletion(
 	return request, false, nil
 }
 
-func (s *UserDeletionService) logSecurityViolation(ctx context.Context, event domain.SecurityEventType, description string, userID uint) {
-	if err := s.auditService.LogSecurityViolation(ctx, event, domain.SecuritySeverityMedium, description, &userID, ""); err != nil {
-		log.Printf("Warning: failed to audit %s for user %d: %v", event, userID, err)
+// logDeletionBlocked keeps the audit trail of a refused deletion. It is a system-category event, not a
+// security violation: a security-category event of the user would itself block later deletions for 90
+// days (LGPDComplianceService.checkSecurityIncidents).
+func (s *UserDeletionService) logDeletionBlocked(ctx context.Context, description string, userID uint) {
+	if err := s.auditService.LogSystemEvent(ctx, "deletion_blocked", description, map[string]interface{}{"user_id": userID}); err != nil {
+		log.Printf("Warning: failed to audit blocked deletion for user %d: %v", userID, err)
 	}
 }
 
@@ -682,6 +685,11 @@ func (s *UserDeletionService) anonymize(ctx context.Context, request *domain.Del
 		warn("failed to anonymize audit logs: %v", err)
 	}
 
+	// Old password hashes must not outlive the account
+	if _, err := s.cascadeDeletor.DeletePasswordHistory(ctx, request.UserID); err != nil {
+		warn("failed to delete password history: %v", err)
+	}
+
 	// Drop the identity cache entry and pending OTP keys
 	if s.accountInvalidator != nil {
 		if err := s.accountInvalidator.InvalidateAccount(ctx, request.UserID, phone); err != nil {
@@ -695,7 +703,7 @@ func (s *UserDeletionService) anonymize(ctx context.Context, request *domain.Del
 		metadata["warnings"] = warnings
 	}
 	anonymizationDetails := domain.AnonymizationDetails{
-		FieldsAnonymized: []string{"email", "phone", "password", "phone_verified", "name", "ip_addresses"},
+		FieldsAnonymized: []string{"email", "phone", "password", "phone_verified", "password_history", "name", "ip_addresses"},
 		Method:           s.config.AnonymizationMethod,
 		Timestamp:        time.Now(),
 		OriginalDataHash: s.hashUserData(request.UserID),

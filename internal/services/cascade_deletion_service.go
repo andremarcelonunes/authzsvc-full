@@ -61,9 +61,11 @@ func (s *CascadeDeletionService) DeletePasswordHistory(ctx context.Context, user
 		return 0, nil // No password history repository available
 	}
 	
-	// This would need a method to delete by user ID
-	// For now, return 0 as placeholder
-	return 0, nil
+	deleted, err := s.passwordHistoryRepo.DeleteAllForUser(ctx, userID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete password history: %w", err)
+	}
+	return int(deleted), nil
 }
 
 // DeleteOrAnonymizeAuditLogs handles audit log deletion/anonymization
