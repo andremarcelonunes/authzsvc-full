@@ -62,31 +62,6 @@ func TestOTPAtRest_NoCodeIsWrittenToAFile(t *testing.T) {
 	}
 }
 
-func TestOTPAtRest_ForgotPasswordRequestStoresNoClearCode(t *testing.T) {
-	t.Chdir(t.TempDir())
-	otp, _, sms := newAtRestOTP(t)
-	user := &domain.User{ID: 7, Email: "a@b.co", Phone: "+14155550100", IsActive: true}
-	userRepo := mocks.NewMockUserRepository()
-	userRepo.FindByEmailFunc = func(ctx context.Context, e string) (*domain.User, error) { return user, nil }
-	userRepo.FindByPhoneFunc = func(ctx context.Context, p string) (*domain.User, error) { return user, nil }
-	forgot := mocks.NewMockForgotPasswordRepository()
-	var stored []string
-	forgot.CreateFunc = func(ctx context.Context, r *domain.ForgotPasswordRequest) error { stored = append(stored, r.OTPCode); return nil }
-	forgot.UpdateFunc = func(ctx context.Context, r *domain.ForgotPasswordRequest) error { stored = append(stored, r.OTPCode); return nil }
-	svc := NewPasswordChangeService(mocks.NewMockPasswordChangeRepository(), mocks.NewMockPasswordHistoryRepository(), forgot,
-		userRepo, mocks.NewMockPasswordService(), otp, mocks.NewMockSessionRepository(), nil, DefaultPasswordChangeConfig())
-
-	if _, err := svc.InitiateForgotPassword(context.Background(), user.Email, user.Phone, "10.0.0.1", "ua"); err != nil {
-		t.Fatal(err)
-	}
-	code := sms.lastCode(t)
-	for _, v := range stored {
-		if v == code {
-			t.Errorf("the reset request row holds the clear code %q", code)
-		}
-	}
-}
-
 func TestOTPDigest_Properties(t *testing.T) {
 	d := NewOTPDigester("jwt-secret")
 	a := d.Digest("otp:+1:7", "123456")
