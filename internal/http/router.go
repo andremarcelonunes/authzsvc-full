@@ -23,7 +23,7 @@ func BuildRouterWithDeletion(ah *handlers.AuthHandlers, ph *handlers.PolicyHandl
 func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers, eh *handlers.ExternalAuthzHandlers, dh *handlers.SwaggerDocsHandler, pch *handlers.PasswordChangeHandlers, delh *handlers.UserDeletionHandlers, jwtmw *middleware.AuthMW, cb middleware.CasbinMiddleware, validationMW *middleware.ValidationMiddleware) *gin.Engine {
 	r := gin.New()
 	ApplyClientIPPolicy(r, "") // strict default: the TCP peer; app.go applies CLIENT_IP_HEADER
-	r.Use(gin.Recovery())
+	r.Use(middleware.ErrorGuard(), middleware.Recovery()) // request ids; 5xx bodies never carry internal error text
 
 	r.GET("/health", func(c *gin.Context){ c.JSON(200, gin.H{"ok": true}) })
 

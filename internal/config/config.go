@@ -25,6 +25,10 @@ type AppConfig struct {
 	// ClientIPHeader: request header carrying the caller address, written by the trusted gateway
 	// (CLIENT_IP_HEADER). Empty: the TCP peer. Never X-Forwarded-For, which clients can forge.
 	ClientIPHeader string `yaml:"client_ip_header"`
+	// ExposeErrorDetails: 5xx answers carry the internal error text (EXPOSE_ERROR_DETAILS). Default false.
+	ExposeErrorDetails *bool `yaml:"expose_error_details"`
+	// DBLogSQL: log every SQL statement (DB_LOG_SQL). Default false; values are never logged.
+	DBLogSQL *bool `yaml:"db_log_sql"`
 }
 
 type DatabaseConfig struct {
@@ -273,6 +277,15 @@ type Config struct {
 
 	// ClientIPHeader (CLIENT_IP_HEADER, yaml app.client_ip_header): the gateway header with the caller address; empty = TCP peer.
 	ClientIPHeader string
+
+	// GinMode (GIN_MODE, yaml app.gin_mode; default release): debug, release or test.
+	GinMode string
+
+	// ExposeErrorDetails (EXPOSE_ERROR_DETAILS, default false): internal error text in 5xx bodies. Never in production.
+	ExposeErrorDetails bool
+
+	// DBLogSQL (DB_LOG_SQL, default false): log SQL statements (with placeholders, never values).
+	DBLogSQL bool
 }
 
 func env(k, def string) string {
@@ -367,6 +380,18 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid SMS_TEST_PHONE_PREFIXES: %w", err)
 	}
+	ginMode, err := loadGinMode(configFile.App.GinMode)
+	if err != nil {
+		return nil, err
+	}
+	exposeErrors, err := resolveBoolSwitchDefaultFalse("EXPOSE_ERROR_DETAILS", configFile.App.ExposeErrorDetails)
+	if err != nil {
+		return nil, err
+	}
+	dbLogSQL, err := resolveBoolSwitchDefaultFalse("DB_LOG_SQL", configFile.App.DBLogSQL)
+	if err != nil {
+		return nil, err
+	}
 	clientIPHeader, err := loadClientIPHeader(configFile.App.ClientIPHeader)
 	if err != nil {
 		return nil, err
@@ -404,6 +429,9 @@ func Load() (*Config, error) {
 		SMSBrand:         smsBrand,
 		SMSTestPhonePrefixes: testPrefixes,
 		ClientIPHeader:   clientIPHeader,
+		GinMode:          ginMode,
+		ExposeErrorDetails: exposeErrors,
+		DBLogSQL:         dbLogSQL,
 	}, nil
 }
 
@@ -549,6 +577,19 @@ func loadSelfDeletionConfig(fromFile SelfDeletionFileConfig) (SelfDeletionConfig
 		minAge = d
 	}
 	return SelfDeletionConfig{Immediate: immediate, MinAccountAge: minAge, RequirePassword: requirePassword}, nil
+}
+
+// loadGinMode resolves the gin mode: GIN_MODE, else app.gin_mode, else release (strict default).
+func loadGinMode(fromFile string) (string, error) {
+	mode := strings.TrimSpace(env("GIN_MODE", fromFile))
+	if mode == "" {
+		return "release", nil
+	}
+	switch mode {
+	case "debug", "release", "test":
+		return mode, nil
+	}
+	return "", fmt.Errorf("invalid GIN_MODE %q: expected debug, release or test", mode)
 }
 
 // loadClientIPHeader applies CLIENT_IP_HEADER over app.client_ip_header. The empty default trusts

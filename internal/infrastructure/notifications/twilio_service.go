@@ -93,6 +93,14 @@ func (t *TwilioServiceImpl) SendSMS(to, message string) error {
 // SendEmail implements domain.NotificationService
 func (t *TwilioServiceImpl) SendEmail(to, subject, body string) error {
 	// Email not implemented with Twilio
-	fmt.Printf("[MOCK EMAIL] To: %s, Subject: %s, Body: %s\n", to, subject, body)
+	log.Printf("[MOCK EMAIL] a message was generated for %s and not sent", maskEmail(to))
 	return nil
+}
+// maskEmail keeps the first character and the domain: a***@example.com.
+func maskEmail(email string) string {
+	at := strings.LastIndex(email, "@")
+	if at <= 0 {
+		return "***"
+	}
+	return email[:1] + "***" + email[at:]
 }

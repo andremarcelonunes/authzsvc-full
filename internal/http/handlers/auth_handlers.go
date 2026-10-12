@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/you/authzsvc/domain"
+	"github.com/you/authzsvc/internal/http/middleware"
 )
 
 // AuthHandlers handles authentication HTTP requests using clean architecture
@@ -577,15 +578,14 @@ func (h *AuthHandlers) VerifyOTP(c *gin.Context) {
 
 	// Activate phone number in database (idempotent operation)
 	if err := h.userRepo.ActivatePhone(c.Request.Context(), user.ID); err != nil {
-		log.Printf("PHONE_ACTIVATION_FAILED: user_id=%d phone=%s error=%v timestamp=%s", 
-			user.ID, req.Phone, err, time.Now().UTC().Format(time.RFC3339))
+		log.Printf("PHONE_ACTIVATION_FAILED: user_id=%d error=%v timestamp=%s",
+			user.ID, middleware.RedactSensitive(err.Error()), time.Now().UTC().Format(time.RFC3339))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to activate phone number"})
 		return
 	}
 
 	// Audit log for successful phone activation
-	log.Printf("PHONE_ACTIVATED: user_id=%d phone=%s email=%s timestamp=%s", 
-		user.ID, req.Phone, user.Email, time.Now().UTC().Format(time.RFC3339))
+	log.Printf("PHONE_ACTIVATED: user_id=%d timestamp=%s", user.ID, time.Now().UTC().Format(time.RFC3339))
 
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{

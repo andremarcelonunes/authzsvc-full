@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/you/authzsvc/domain"
 	"github.com/you/authzsvc/internal/config"
 	httpx "github.com/you/authzsvc/internal/http"
@@ -24,7 +25,12 @@ import (
 // Old tokenSvc removed - using clean architecture services now
 
 func Run(cfg *config.Config) error {
-	gdb, err := database.Open(cfg.DSN)
+	gin.SetMode(cfg.GinMode) // GIN_MODE / app.gin_mode, release by default
+	middleware.SetExposeErrorDetails(cfg.ExposeErrorDetails)
+	if cfg.ExposeErrorDetails {
+		log.Printf("WARNING: EXPOSE_ERROR_DETAILS is on: 5xx answers carry internal error text. This must be off in production.")
+	}
+	gdb, err := database.OpenWithSQLLogging(cfg.DSN, cfg.DBLogSQL)
 	if err != nil {
 		return err
 	}
