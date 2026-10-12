@@ -16,8 +16,12 @@ const (
 	KeyPrefix = "authz:backend_id:"
 	// PositiveTTL is how long a found mapping is cached.
 	PositiveTTL = 5 * time.Minute
-	// NegativeTTL is how long a "not found" answer is cached.
-	NegativeTTL = 30 * time.Second
+	// NegativeTTL is how long a "not found" answer is cached. Kept very short: an account
+	// has no backend profile only for the moment between sign-up and profile creation, and
+	// the first call after that (which creates the profile) is exactly the one that caches
+	// "not found". A long TTL left a brand-new account without x-backend-user-id for half a
+	// minute, so services that depend on that header refused it right after sign-up.
+	NegativeTTL = 2 * time.Second
 
 	foundPrefix   = "1:"
 	notFoundValue = "0"
