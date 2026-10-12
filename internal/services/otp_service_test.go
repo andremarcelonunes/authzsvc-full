@@ -583,15 +583,21 @@ func TestOTPServiceImpl_CompleteOTPFlow(t *testing.T) {
 	// Clean up
 	redisClient.FlushDB(ctx)
 }
-// A second Generate inside the resend window must fail with an error that matches
-// domain.ErrOTPResendThrottled while keeping the human-readable wait message.
+// Inside the resend window with NO valid code out (it was consumed), Generate fails with an error that
+// matches domain.ErrOTPResendThrottled while keeping the human-readable wait message. While a valid code
+// is out, asking again sends nothing and answers like a fresh request (see TestSMSWeakness_*).
 func TestOTPServiceImpl_Generate_ResendWindowWrapsSentinel(t *testing.T) {
-	otpService, _, _, _ := createOTPServiceForTest(t)
+	otpService, _, _, redisClient := createOTPServiceForTest(t)
 	ctx := createTestContext(t)
 
-	if _, err := otpService.Generate(ctx, "+1234567890", 1); err != nil {
+	otpReq0, err := otpService.Generate(ctx, "+1234567890", 1)
+	if err != nil {
 		t.Fatalf("first Generate should succeed, got %v", err)
 	}
+	if ok, err := otpService.Verify(ctx, "+1234567890", otpReq0.Code, 1); err != nil || !ok {
+		t.Fatalf("verify: %v %v", ok, err)
+	}
+	_ = redisClient
 
 	otpReq, err := otpService.Generate(ctx, "+1234567890", 1)
 	if !errors.Is(err, domain.ErrOTPResendThrottled) {
