@@ -1,0 +1,10 @@
+.git
+logs
+node_modules
+bin
+*.log
+*.test
+*.out
+.env*
+config/config.yml
+requirements_for_onboarding.md

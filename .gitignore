@@ -8,6 +8,8 @@ config.json
 config.yaml
 config.yml
 *.conf
+# The Casbin model is code, not local configuration: the image and the service need it.
+!casbin/model.conf
 
 # Go build artifacts
 /bin/
