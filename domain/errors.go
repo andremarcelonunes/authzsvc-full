@@ -21,6 +21,16 @@ var (
 	ErrRoleTransitionNotAllowed = errors.New("role transition not allowed")
 )
 
+// AuthFailureError wraps an authentication error together with the id of the account the attempt was
+// for, when the identifier resolved to one. errors.Is/As see through it; the message is the wrapped one.
+type AuthFailureError struct {
+	UserID uint
+	Err    error
+}
+
+func (e *AuthFailureError) Error() string { return e.Err.Error() }
+func (e *AuthFailureError) Unwrap() error { return e.Err }
+
 // Self-service deletion errors
 var (
 	// ErrDeletionPasswordConfirmation is returned when SELF_DELETION_REQUIRE_PASSWORD is on and the

@@ -50,7 +50,7 @@ func Run(cfg *config.Config) error {
 	// Initialize infrastructure services
 	passwordSvc := auth.NewPasswordService()
 	tokenSvc := auth.NewJWTService(cfg.JWTSecret, cfg.JWTIssuer, cfg.AccessTTL, cfg.RefreshTTL)
-	notificationSvc := notifications.NewTwilioService(cfg.TwilioSID, cfg.TwilioToken, cfg.TwilioFrom)
+	notificationSvc := notifications.NewTwilioService(cfg.TwilioSID, cfg.TwilioToken, cfg.TwilioFrom, notifications.WithLogMessages(cfg.OTPLogCodes))
 
 	// Initialize repositories
 	userRepo := repositories.NewUserRepository(gdb)
@@ -71,6 +71,7 @@ func Run(cfg *config.Config) error {
 		TTL:          cfg.OTP_TTL,
 		MaxAttempts:  cfg.OTP_MaxAttempts,
 		ResendWindow: cfg.OTP_ResendWindow,
+		Secret:       cfg.JWTSecret, // keys the stored digest of one-time codes
 	}
 	otpSvc := services.NewOTPService(notificationSvc, userRepo, rdb, otpConfig)
 
@@ -99,6 +100,7 @@ func Run(cfg *config.Config) error {
 		passwordChangeConfig,
 		services.WithPasswordChangePolicy(passwordPolicy),
 		services.WithPasswordResetRequireEmail(cfg.Password.ResetRequireEmail), // PASSWORD_RESET_REQUIRE_EMAIL
+		services.WithPasswordChangeOTPDigester(services.NewOTPDigester(cfg.JWTSecret)),
 	)
 
 	// LGPD User Deletion: Initialize deletion system

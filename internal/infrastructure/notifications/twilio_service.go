@@ -2,6 +2,8 @@ package notifications
 
 import (
 	"fmt"
+	"log"
+	"strings"
 
 	"github.com/twilio/twilio-go"
 	twilioApi "github.com/twilio/twilio-go/rest/api/v2010"
@@ -10,28 +12,55 @@ import (
 
 // TwilioServiceImpl implements domain.NotificationService
 type TwilioServiceImpl struct {
-	client     *twilio.RestClient
-	fromNumber string
+	client      *twilio.RestClient
+	fromNumber  string
+	logMessages bool
+}
+
+// Option configures TwilioServiceImpl.
+type Option func(*TwilioServiceImpl)
+
+// WithLogMessages makes the no-provider mock path print the whole message, one-time code included
+// (OTP_LOG_CODES). Off by default: the mock path then logs only that a message was generated, for a
+// masked phone.
+func WithLogMessages(on bool) Option {
+	return func(t *TwilioServiceImpl) { t.logMessages = on }
+}
+
+// maskPhone keeps the first three and last two characters: +55*******00.
+func maskPhone(phone string) string {
+	if len(phone) <= 6 {
+		return strings.Repeat("*", len(phone))
+	}
+	return phone[:3] + strings.Repeat("*", len(phone)-5) + phone[len(phone)-2:]
 }
 
 // NewTwilioService creates a new Twilio notification service
-func NewTwilioService(accountSID, authToken, fromNumber string) domain.NotificationService {
+func NewTwilioService(accountSID, authToken, fromNumber string, opts ...Option) domain.NotificationService {
 	client := twilio.NewRestClientWithParams(twilio.ClientParams{
 		Username: accountSID,
 		Password: authToken,
 	})
 
-	return &TwilioServiceImpl{
+	svc := &TwilioServiceImpl{
 		client:     client,
 		fromNumber: fromNumber,
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // SendSMS implements domain.NotificationService
 func (t *TwilioServiceImpl) SendSMS(to, message string) error {
 	// If credentials are not configured, log instead of sending
 	if t.fromNumber == "" {
-		fmt.Printf("[MOCK SMS] To: %s, Message: %s\n", to, message)
+		if t.logMessages {
+			log.Printf("[MOCK SMS] To: %s, Message: %s", to, message)
+		} else {
+			log.Printf("[MOCK SMS] a message was generated for %s and not sent: no SMS provider configured (OTP_LOG_CODES=true prints it)", maskPhone(to))
+		}
 		return nil
 	}
 

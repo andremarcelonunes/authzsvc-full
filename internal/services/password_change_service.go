@@ -21,6 +21,7 @@ type PasswordChangeService struct {
 	userRepo            domain.UserRepository
 	passwordService     domain.PasswordService
 	otpService          domain.OTPService
+	otpDigester         *OTPDigester
 	sessionRepo         domain.SessionRepository
 	auditService        domain.ComprehensiveAuditService
 	config              PasswordChangeConfig
@@ -41,6 +42,25 @@ type PasswordChangeOption func(*PasswordChangeService)
 // WithPasswordChangePolicy makes change and reset use the shared password policy.
 func WithPasswordChangePolicy(policy domain.PasswordPolicy) PasswordChangeOption {
 	return func(s *PasswordChangeService) { s.passwordPolicy = &policy }
+}
+
+// WithPasswordChangeOTPDigester makes the service store only a keyed digest of the one-time codes it
+// keeps in the password change / forgot password request rows. Without it codes are stored as before.
+func WithPasswordChangeOTPDigester(d *OTPDigester) PasswordChangeOption {
+	return func(s *PasswordChangeService) { s.otpDigester = d }
+}
+
+// sealOTP is the form of a code that goes into a request row.
+func (s *PasswordChangeService) sealOTP(requestID, code string) string {
+	if s.otpDigester == nil {
+		return code
+	}
+	return s.otpDigester.Digest("req:"+requestID, code)
+}
+
+// otpMatches compares a stored request code (digest, or clear if written by an older release) with the typed one.
+func (s *PasswordChangeService) otpMatches(requestID, stored, provided string) bool {
+	return otpMatches(s.otpDigester, stored, "req:"+requestID, provided)
 }
 
 // WithPasswordResetRequireEmail sets PASSWORD_RESET_REQUIRE_EMAIL. true (the default) keeps the
@@ -206,8 +226,8 @@ func (s *PasswordChangeService) InitiatePasswordChange(ctx context.Context, user
 		return nil, fmt.Errorf("failed to send OTP: %w", err)
 	}
 
-	// Replace temporary password hash with OTP code
-	request.OTPCode = otpCode
+	// Replace temporary password hash with the code's digest
+	request.OTPCode = s.sealOTP(requestID, otpCode)
 	otpExpiresAt := time.Now().Add(s.config.OTPTTL)
 	request.OTPGeneratedAt = &time.Time{}
 	*request.OTPGeneratedAt = time.Now()
@@ -284,7 +304,7 @@ func (s *PasswordChangeService) CompletePasswordChange(ctx context.Context, user
 	// For password change requests, OTP expiration is same as request expiration
 	// No separate OTP expiration check needed since IsExpired() already validated above
 
-	if request.OTPCode != otpCode {
+	if !s.otpMatches(requestID, request.OTPCode, otpCode) {
 		// Increment OTP attempts
 		request.OTPAttempts++
 		s.passwordChangeRepo.UpdateOTPAttempts(ctx, requestID, request.OTPAttempts)
@@ -490,7 +510,7 @@ func (s *PasswordChangeService) InitiateForgotPassword(ctx context.Context, emai
 		otpCode, err := s.generateAndSendOTP(ctx, phone, *userID)
 		if err == nil {
 			otpExpiresAt := time.Now().Add(s.config.OTPTTL)
-			request.OTPCode = otpCode
+			request.OTPCode = s.sealOTP(requestID, otpCode)
 			request.OTPGeneratedAt = &time.Time{}
 			*request.OTPGeneratedAt = time.Now()
 			request.OTPExpiresAt = &otpExpiresAt
@@ -549,7 +569,7 @@ func (s *PasswordChangeService) CompleteForgotPassword(ctx context.Context, requ
 	// For forgot password requests, OTP expiration is same as request expiration
 	// No separate OTP expiration check needed since IsExpired() already validated above
 
-	if request.UserID == nil || request.OTPCode == "" || request.OTPCode != otpCode {
+	if request.UserID == nil || request.OTPCode == "" || !s.otpMatches(requestID, request.OTPCode, otpCode) {
 		// Increment OTP attempts
 		request.OTPAttempts++
 		s.forgotPasswordRepo.UpdateOTPAttempts(ctx, requestID, request.OTPAttempts)

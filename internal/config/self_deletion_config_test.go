@@ -77,3 +77,13 @@ func TestResolveBoolSwitchWithDefault(t *testing.T) {
 		t.Error("env must win over file")
 	}
 }
+
+func TestOTPLogCodesSwitchDefaultsToFalse(t *testing.T) {
+	if v, err := resolveBoolSwitchDefaultFalse("OTP_LOG_CODES", nil); err != nil || v {
+		t.Errorf("OTP_LOG_CODES must default to false: %v %v", v, err)
+	}
+	t.Setenv("OTP_LOG_CODES", "true")
+	if v, _ := resolveBoolSwitchDefaultFalse("OTP_LOG_CODES", nil); !v {
+		t.Error("OTP_LOG_CODES=true must switch it on")
+	}
+}
