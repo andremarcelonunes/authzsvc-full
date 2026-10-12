@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/casbin/casbin/v2"
@@ -22,9 +23,9 @@ import (
 
 // ExternalAuthzHandlers handles external authorization requests from Envoy
 type ExternalAuthzHandlers struct {
-	tokenSvc      domain.TokenService
-	sessionRepo   domain.SessionRepository
-	enforcer      *casbin.Enforcer
+	tokenSvc       domain.TokenService
+	sessionRepo    domain.SessionRepository
+	enforcer       *casbin.Enforcer
 	fieldExtractor *middleware.FieldExtractor
 	// backendIdentity translates the token's user id into the id used by the
 	// other services. nil means "not configured".
@@ -40,12 +41,12 @@ func NewExternalAuthzHandlers(
 ) *ExternalAuthzHandlers {
 	// Create a temporary SimpleCasbinMW for field extraction utilities
 	tempCasbinMW := middleware.NewSimpleCasbinMW(enforcer)
-	
+
 	return &ExternalAuthzHandlers{
-		tokenSvc:       tokenSvc,
-		sessionRepo:    sessionRepo,
-		enforcer:       enforcer,
-		fieldExtractor: middleware.NewFieldExtractor(tempCasbinMW),
+		tokenSvc:        tokenSvc,
+		sessionRepo:     sessionRepo,
+		enforcer:        enforcer,
+		fieldExtractor:  middleware.NewFieldExtractor(tempCasbinMW),
 		backendIdentity: backendIdentity,
 	}
 }
@@ -58,7 +59,7 @@ type EnvoyRequest struct {
 				Method  string            `json:"method"`
 				Path    string            `json:"path"`
 				Headers map[string]string `json:"headers"`
-				Body    string            `json:"body,omitempty"`    // Base64 encoded
+				Body    string            `json:"body,omitempty"` // Base64 encoded
 				Query   string            `json:"query,omitempty"`
 			} `json:"http"`
 		} `json:"request"`
@@ -85,9 +86,9 @@ type AuthzResponse struct {
 // authzOutcome is the result of the shared authorization decision used by both
 // the JSON endpoint (Authorize) and the Envoy-native endpoint (Check).
 type authzOutcome struct {
-	status  int                // 200, 401, 403 or 500
-	message string             // client-safe message (error text for non-200)
-	detail  string             // internal detail, only set for 500; never sent by Check
+	status  int                 // 200, 401, 403 or 500
+	message string              // client-safe message (error text for non-200)
+	detail  string              // internal detail, only set for 500; never sent by Check
 	claims  *domain.TokenClaims // set when status == 200
 	// backendUserID is the caller's id in the other services; empty when the
 	// user is not mapped or cannot be resolved. Only meaningful when status == 200.
@@ -152,6 +153,8 @@ func (h *ExternalAuthzHandlers) decide(ctx context.Context, envoyReq EnvoyReques
 	tokenClaims := map[string]interface{}{
 		"user_id": fmt.Sprintf("%d", claims.UserID),
 		"role":    claims.Role,
+		// "true" / "false" (rules compare strings); tokens without the claim are "false"
+		"phone_verified": strconv.FormatBool(claims.PhoneVerified),
 	}
 
 	// Apply Casbin authorization logic
@@ -195,7 +198,7 @@ func (h *ExternalAuthzHandlers) Authorize(c *gin.Context) {
 	var envoyReq EnvoyRequest
 	if err := c.ShouldBindJSON(&envoyReq); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid request format",
+			"error":   "Invalid request format",
 			"details": err.Error(),
 		})
 		return
@@ -214,8 +217,9 @@ func (h *ExternalAuthzHandlers) Authorize(c *gin.Context) {
 				Code int `json:"code"`
 			}{Code: http.StatusOK},
 			Headers: map[string]string{
-				"x-user-id":   fmt.Sprintf("%d", out.claims.UserID),
-				"x-user-role": out.claims.Role,
+				"x-user-id":         fmt.Sprintf("%d", out.claims.UserID),
+				"x-user-role":       out.claims.Role,
+				"x-user-phone":      out.claims.Phone,
 				"x-backend-user-id": out.backendUserID,
 			},
 		})
@@ -247,7 +251,7 @@ const maxCheckBodyBytes = 1 << 20
 //   - body    = request body, base64 encoded (may be empty/partial)
 //
 // The decision is taken from the status code (200 allow, 401/403/500 deny);
-// identity is returned only in the x-user-id / x-user-role / x-backend-user-id response headers,
+// identity is returned only in the x-user-id / x-user-role / x-user-phone / x-backend-user-id response headers,
 // taken from the validated token (never from request headers).
 func (h *ExternalAuthzHandlers) Check(c *gin.Context) {
 	var envoyReq EnvoyRequest
@@ -279,6 +283,9 @@ func (h *ExternalAuthzHandlers) Check(c *gin.Context) {
 
 	c.Header("x-user-id", fmt.Sprintf("%d", out.claims.UserID))
 	c.Header("x-user-role", out.claims.Role)
+	// Always present (possibly empty, for tokens issued without the claim) so the proxy
+	// overwrites a client-supplied value.
+	c.Writer.Header().Set("x-user-phone", out.claims.Phone)
 	// Always present (possibly empty) so the proxy overwrites a client-supplied
 	// value. c.Header would drop an empty value, hence the direct Set.
 	c.Writer.Header().Set("x-backend-user-id", out.backendUserID)
@@ -641,12 +648,12 @@ func (h *ExternalAuthzHandlers) methodMatches(requestMethod, policyMethod string
 	if requestMethod == policyMethod {
 		return true
 	}
-	
+
 	// Wildcard match
 	if policyMethod == "*" {
 		return true
 	}
-	
+
 	// Regex pattern matching (simplified for this example)
 	if strings.HasPrefix(policyMethod, "(") && strings.HasSuffix(policyMethod, ")") {
 		pattern := strings.Trim(policyMethod, "()")
@@ -657,10 +664,9 @@ func (h *ExternalAuthzHandlers) methodMatches(requestMethod, policyMethod string
 			}
 		}
 	}
-	
+
 	return false
 }
-
 
 // Response helper methods
 func (h *ExternalAuthzHandlers) respondUnauthorized(c *gin.Context, message string) {

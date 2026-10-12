@@ -601,3 +601,31 @@ func TestExtractRequestValue_RepeatedQueryParameterNeverMatches(t *testing.T) {
 		t.Errorf("single occurrence: expected 15, got value=%q found=%v err=%v", value, found, err)
 	}
 }
+
+// x-user-phone comes from the token only: present with the account's phone, present and
+// empty for a token without the claim, and a client-supplied value is never echoed.
+func TestCheck_PhoneHeader_FromTokenOnly(t *testing.T) {
+	f, _ := gatewayFixture(t)
+	spoof := map[string]string{"Authorization": "Bearer valid_token", "x-user-phone": "+15550000000"}
+	phoneHeader := func(w *httptest.ResponseRecorder) (string, bool) {
+		v, ok := w.Header()["X-User-Phone"]
+		if !ok || len(v) != 1 {
+			return "", false
+		}
+		return v[0], true
+	}
+
+	f.tokenSvc.ValidateAccessTokenFunc = func(token string) (*domain.TokenClaims, error) {
+		return &domain.TokenClaims{UserID: 4774, Role: "client", SessionID: "s", Phone: "+5511988887777"}, nil
+	}
+	w := f.do("POST", "/external/authz/check/api/v1/users/register/contact/", spoof, "{}")
+	if v, ok := phoneHeader(w); w.Code != 200 || !ok || v != "+5511988887777" {
+		t.Errorf("with claim: status %d %q %v", w.Code, v, ok)
+	}
+
+	f.asUser(4774, "client") // token without the phone claim
+	w = f.do("POST", "/external/authz/check/api/v1/users/register/contact/", spoof, "{}")
+	if v, ok := phoneHeader(w); w.Code != 200 || !ok || v != "" {
+		t.Errorf("without claim: status %d %q %v", w.Code, v, ok)
+	}
+}

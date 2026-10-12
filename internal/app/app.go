@@ -188,11 +188,13 @@ func Run(cfg *config.Config) error {
 			BlockedDomains:      []string{"tempmail.com", "10minutemail.com"},
 			RequireVerification: false,
 			MaxLength:           254,
+			Optional:            !cfg.Registration.RequireEmail, // REQUIRE_REGISTRATION_EMAIL=false
 		},
 		PhoneValidation: services.PhoneValidationConfig{
 			RequiredFormat:   "E.164",
 			AllowedCountries: []string{},
 			BlockedCountries: []string{},
+			RequireVerification: cfg.Registration.RequirePhoneVerification, // same switch as login (REQUIRE_PHONE_VERIFICATION)
 		},
 		UserLimits: services.UserLimitsConfig{
 			MaxRegistrationsPerIP:   5,
@@ -221,11 +223,13 @@ func Run(cfg *config.Config) error {
 	// CB-194: Initialize identifier resolution service and authentication strategies
 	log.Println("CB-194: Initializing unified authentication system...")
 	identifierResolver := services.NewIdentifierResolutionService()
-	emailAuthStrategy := services.NewEmailAuthStrategy(userRepo, passwordSvc, identifierResolver)
-	phoneAuthStrategy := services.NewPhoneAuthStrategy(userRepo, passwordSvc, identifierResolver)
+	// REQUIRE_PHONE_VERIFICATION: one policy shared by the strategies and the auth service
+	phoneVerification := domain.PhoneVerificationRule{Required: cfg.Registration.RequirePhoneVerification}
+	emailAuthStrategy := services.NewEmailAuthStrategy(userRepo, passwordSvc, identifierResolver, services.WithStrategyPhoneVerificationPolicy(phoneVerification))
+	phoneAuthStrategy := services.NewPhoneAuthStrategy(userRepo, passwordSvc, identifierResolver, services.WithStrategyPhoneVerificationPolicy(phoneVerification))
 
 	// Initialize auth service with validation support and unified authentication (CB-194)
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, requestValidationSvc, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy)
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, requestValidationSvc, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy, services.WithPhoneVerificationPolicy(phoneVerification))
 
 	// Configure validation middleware
 	validationConfig := middleware.ValidationConfig{
@@ -274,7 +278,10 @@ func Run(cfg *config.Config) error {
 	)
 
 	// Initialize handlers
-	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo, tokenSvc, sessionRepo)
+	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo, tokenSvc, sessionRepo,
+		handlers.WithRequireRegistrationEmail(cfg.Registration.RequireEmail),
+		handlers.WithRequirePhoneVerification(cfg.Registration.RequirePhoneVerification),
+	)
 	polH := &handlers.PolicyHandlers{E: cas.E}
 	// Backend id translation for token.backend_user_id; nil (untyped) when not configured.
 	var backendIdentity domain.BackendIdentityResolver

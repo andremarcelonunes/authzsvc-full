@@ -55,6 +55,12 @@ type AuthService interface {
 	RefreshToken(ctx context.Context, refreshToken string) (*AuthResult, error)
 	Logout(ctx context.Context, sessionID string) error
 	GetUserProfile(ctx context.Context, userID uint) (*User, error)
+	// AddProfile lets an authenticated user add the "client" or "contact" profile to their own
+	// account (see NextRoleOnAddProfile). It returns the user with the resulting role; adding a
+	// profile already held is a no-op. Fails with ErrRoleTransitionNotAllowed for any other
+	// transition and ErrUserNotFound if the user does not exist. The role is stored in the database;
+	// tokens issued afterwards (refresh or login) carry it.
+	AddProfile(ctx context.Context, userID uint, add string) (*User, error)
 	
 	// AuthenticateUser provides unified authentication with support for email or phone identifier
 	AuthenticateUser(ctx context.Context, request *AuthRequest) (*AuthResult, error)
@@ -76,6 +82,8 @@ type PasswordService interface {
 // TokenService defines token operations
 type TokenService interface {
 	GenerateAccessToken(userID uint, role string, sessionID string) (string, error)
+	// GenerateUserAccessToken is GenerateAccessToken plus the phone and phone_verified claims.
+	GenerateUserAccessToken(userID uint, role string, sessionID string, phone string, phoneVerified bool) (string, error)
 	GenerateRefreshToken(userID uint, role string, sessionID string) (string, error)
 	ValidateAccessToken(token string) (*TokenClaims, error)
 	ValidateRefreshToken(token string) (*TokenClaims, error)
@@ -102,6 +110,10 @@ type TokenClaims struct {
 	SessionID string `json:"session_id,omitempty"`
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
+	// PhoneVerified is the phone_verified claim; tokens issued without it are not verified.
+	PhoneVerified bool `json:"phone_verified"`
+	// Phone is the phone claim (the account's phone as stored); empty in tokens issued without it.
+	Phone string `json:"phone,omitempty"`
 }
 
 // CasbinEnforcer interface defines the methods we need from Casbin enforcer

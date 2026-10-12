@@ -11,6 +11,9 @@ import (
 type MockTokenService struct {
 	GenerateAccessTokenFunc  func(userID uint, role string, sessionID string) (string, error)
 	GenerateRefreshTokenFunc func(userID uint, role string, sessionID string) (string, error)
+	// GenerateUserAccessTokenFunc, when set, replaces the default of
+	// GenerateUserAccessToken (which delegates to GenerateAccessToken).
+	GenerateUserAccessTokenFunc func(userID uint, role string, sessionID string, phone string, phoneVerified bool) (string, error)
 	ValidateAccessTokenFunc  func(token string) (*domain.TokenClaims, error)
 	ValidateRefreshTokenFunc func(token string) (*domain.TokenClaims, error)
 }
@@ -27,6 +30,15 @@ func (m *MockTokenService) GenerateAccessToken(userID uint, role string, session
 	}
 	// Default behavior: return a mock access token
 	return fmt.Sprintf("access_token_user_%d_%s_%s", userID, role, sessionID), nil
+}
+
+// GenerateUserAccessToken generates an access token carrying the phone and phone_verified claims.
+// Unless GenerateUserAccessTokenFunc is set it behaves like GenerateAccessToken.
+func (m *MockTokenService) GenerateUserAccessToken(userID uint, role string, sessionID string, phone string, phoneVerified bool) (string, error) {
+	if m.GenerateUserAccessTokenFunc != nil {
+		return m.GenerateUserAccessTokenFunc(userID, role, sessionID, phone, phoneVerified)
+	}
+	return m.GenerateAccessToken(userID, role, sessionID)
 }
 
 // GenerateRefreshToken generates a refresh token for the user

@@ -13,6 +13,7 @@ type PhoneAuthStrategy struct {
 	userRepository      domain.UserRepository
 	passwordService     domain.PasswordService
 	identifierResolver  domain.IdentifierResolutionService
+	phoneVerification   domain.PhoneVerificationPolicy
 }
 
 // NewPhoneAuthStrategy creates a new phone authentication strategy
@@ -20,12 +21,18 @@ func NewPhoneAuthStrategy(
 	userRepository domain.UserRepository,
 	passwordService domain.PasswordService,
 	identifierResolver domain.IdentifierResolutionService,
+	opts ...AuthStrategyOption,
 ) domain.AuthenticationStrategy {
-	return &PhoneAuthStrategy{
+	s := &PhoneAuthStrategy{
 		userRepository:     userRepository,
 		passwordService:    passwordService,
 		identifierResolver: identifierResolver,
+		phoneVerification:  domain.StrictPhoneVerification(),
 	}
+	for _, opt := range opts {
+		opt(&s.phoneVerification)
+	}
+	return s
 }
 
 // Authenticate performs authentication using phone number and password
@@ -56,7 +63,7 @@ func (s *PhoneAuthStrategy) Authenticate(ctx context.Context, identifier, passwo
 	}
 
 	// Check if phone is verified (enhanced security requirement for phone-based auth)
-	if !user.PhoneVerified {
+	if s.phoneVerification.ShouldEnforceVerification(user) {
 		return nil, domain.ErrPhoneNotVerified
 	}
 

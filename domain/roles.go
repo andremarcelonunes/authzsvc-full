@@ -10,6 +10,12 @@ const (
 	RoleClient    = "client"
 	RoleContact   = "contact"
 	RoleUser      = "user"
+
+	// RoleClientContact is a dual role: the same account is a client (the monitored person)
+	// and a contact of someone else. It inherits the policies of both role_client and
+	// role_contact. It is never self-registered; it is reached through AddProfile or created
+	// by root/admin.
+	RoleClientContact = "client_contact"
 )
 
 // DefaultRegistrationRole is applied when a registration request carries no role.
@@ -17,7 +23,7 @@ const DefaultRegistrationRole = RoleUser
 
 // AllRoles lists every role known to the system.
 func AllRoles() []string {
-	return []string{RoleRoot, RoleAdmin, RoleAttendant, RoleClient, RoleContact, RoleUser}
+	return []string{RoleRoot, RoleAdmin, RoleAttendant, RoleClient, RoleContact, RoleUser, RoleClientContact}
 }
 
 // IsKnownRole reports whether role is one of the defined roles.
@@ -63,9 +69,9 @@ func IsRoleAllowedForPublicRegistration(role string) bool {
 func CreatableRoles(creatorRole string) []string {
 	switch creatorRole {
 	case RoleRoot:
-		return []string{RoleAdmin, RoleAttendant, RoleClient, RoleContact, RoleUser}
+		return []string{RoleAdmin, RoleAttendant, RoleClient, RoleContact, RoleUser, RoleClientContact}
 	case RoleAdmin:
-		return []string{RoleAttendant, RoleClient, RoleContact, RoleUser}
+		return []string{RoleAttendant, RoleClient, RoleContact, RoleUser, RoleClientContact}
 	default:
 		return nil
 	}

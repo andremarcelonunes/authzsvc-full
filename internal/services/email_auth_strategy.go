@@ -13,6 +13,7 @@ type EmailAuthStrategy struct {
 	userRepository      domain.UserRepository
 	passwordService     domain.PasswordService
 	identifierResolver  domain.IdentifierResolutionService
+	phoneVerification   domain.PhoneVerificationPolicy
 }
 
 // NewEmailAuthStrategy creates a new email authentication strategy
@@ -20,12 +21,18 @@ func NewEmailAuthStrategy(
 	userRepository domain.UserRepository,
 	passwordService domain.PasswordService,
 	identifierResolver domain.IdentifierResolutionService,
+	opts ...AuthStrategyOption,
 ) domain.AuthenticationStrategy {
-	return &EmailAuthStrategy{
+	s := &EmailAuthStrategy{
 		userRepository:     userRepository,
 		passwordService:    passwordService,
 		identifierResolver: identifierResolver,
+		phoneVerification:  domain.StrictPhoneVerification(),
 	}
+	for _, opt := range opts {
+		opt(&s.phoneVerification)
+	}
+	return s
 }
 
 // Authenticate performs authentication using email and password
@@ -61,7 +68,7 @@ func (s *EmailAuthStrategy) Authenticate(ctx context.Context, identifier, passwo
 	}
 
 	// Check if phone is verified (required for all users)
-	if !user.PhoneVerified {
+	if s.phoneVerification.ShouldEnforceVerification(user) {
 		return nil, domain.ErrPhoneNotVerified
 	}
 
