@@ -21,6 +21,15 @@ var (
 	ErrRoleTransitionNotAllowed = errors.New("role transition not allowed")
 )
 
+// Self-service deletion errors
+var (
+	// ErrDeletionPasswordConfirmation is returned when SELF_DELETION_REQUIRE_PASSWORD is on and the
+	// password is missing or wrong.
+	ErrDeletionPasswordConfirmation = errors.New("password confirmation failed")
+	// ErrDeletionRoleBlocked is returned when an admin, root or attendant account asks for immediate self-deletion.
+	ErrDeletionRoleBlocked = errors.New("this kind of account cannot be deleted here")
+)
+
 // OTP errors
 var (
 	ErrOTPExpired     = errors.New("otp has expired")

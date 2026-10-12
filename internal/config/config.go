@@ -151,6 +151,28 @@ type PasswordConfig struct {
 	ResetRequireEmail bool
 }
 
+// SelfDeletionFileConfig is the optional "self_deletion" section; every key is optional.
+type SelfDeletionFileConfig struct {
+	Immediate       *bool  `yaml:"immediate"`
+	MinAccountAge   string `yaml:"min_account_age"`
+	RequirePassword *bool  `yaml:"require_password"`
+}
+
+// DefaultSelfDeletionMinAccountAge is the minimum account age to request deletion when unset.
+const DefaultSelfDeletionMinAccountAge = 24 * time.Hour
+
+// SelfDeletionConfig holds the switches of POST /users/me/deletion. The defaults keep the
+// scheduled flow: nothing is processed at once, accounts must be 24h old, no credential is asked.
+type SelfDeletionConfig struct {
+	// Immediate: when true a self-requested deletion is processed synchronously (SELF_DELETION_IMMEDIATE). Default false.
+	Immediate bool
+	// MinAccountAge: accounts younger than this cannot request deletion; 0 disables the rule
+	// (SELF_DELETION_MIN_ACCOUNT_AGE). Default 24h.
+	MinAccountAge time.Duration
+	// RequirePassword: when true the request must carry the account password (SELF_DELETION_REQUIRE_PASSWORD). Default false.
+	RequirePassword bool
+}
+
 // Bounds accepted for PASSWORD_MIN_LENGTH and the registration rate limit settings.
 const (
 	MinAllowedPasswordMinLength = 4
@@ -174,6 +196,7 @@ type ConfigFile struct {
 	IdentityBackend IdentityBackendFileConfig `yaml:"identity_backend"`
 	Registration    RegistrationFileConfig    `yaml:"registration"`
 	Password        PasswordFileConfig        `yaml:"password"`
+	SelfDeletion    SelfDeletionFileConfig    `yaml:"self_deletion"`
 }
 
 type Config struct {
@@ -212,6 +235,9 @@ type Config struct {
 
 	// Password switches (PASSWORD_REQUIRE_COMPLEXITY, PASSWORD_MIN_LENGTH, PASSWORD_RESET_REQUIRE_EMAIL); environment overrides config file
 	Password PasswordConfig
+
+	// Self-deletion switches (SELF_DELETION_IMMEDIATE, SELF_DELETION_MIN_ACCOUNT_AGE, SELF_DELETION_REQUIRE_PASSWORD); environment overrides config file
+	SelfDeletion SelfDeletionConfig
 }
 
 func env(k, def string) string {
@@ -280,6 +306,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	selfDeletion, err := loadSelfDeletionConfig(configFile.SelfDeletion)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		Port:             fmt.Sprintf("%d", configFile.App.Port),
 		DSN:              configFile.Database.DSN,
@@ -306,6 +337,7 @@ func Load() (*Config, error) {
 		IdentityBackend:  identityBackend,
 		Registration:     registration,
 		Password:         password,
+		SelfDeletion:     selfDeletion,
 	}, nil
 }
 
@@ -428,9 +460,43 @@ func loadPasswordConfig(fromFile PasswordFileConfig) (PasswordConfig, error) {
 	return PasswordConfig{RequireComplexity: complexity, MinLength: minLength, ResetRequireEmail: resetEmail}, nil
 }
 
+// loadSelfDeletionConfig applies SELF_DELETION_IMMEDIATE, SELF_DELETION_MIN_ACCOUNT_AGE and
+// SELF_DELETION_REQUIRE_PASSWORD over the optional self_deletion section. Defaults: false, 24h, false.
+func loadSelfDeletionConfig(fromFile SelfDeletionFileConfig) (SelfDeletionConfig, error) {
+	immediate, err := resolveBoolSwitchDefaultFalse("SELF_DELETION_IMMEDIATE", fromFile.Immediate)
+	if err != nil {
+		return SelfDeletionConfig{}, err
+	}
+	requirePassword, err := resolveBoolSwitchDefaultFalse("SELF_DELETION_REQUIRE_PASSWORD", fromFile.RequirePassword)
+	if err != nil {
+		return SelfDeletionConfig{}, err
+	}
+	minAge := DefaultSelfDeletionMinAccountAge
+	if raw := env("SELF_DELETION_MIN_ACCOUNT_AGE", fromFile.MinAccountAge); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return SelfDeletionConfig{}, fmt.Errorf("invalid self deletion minimum account age %q: expected a duration such as 24h or 0", raw)
+		}
+		if d < 0 {
+			return SelfDeletionConfig{}, fmt.Errorf("invalid self deletion minimum account age %s: must not be negative", d)
+		}
+		minAge = d
+	}
+	return SelfDeletionConfig{Immediate: immediate, MinAccountAge: minAge, RequirePassword: requirePassword}, nil
+}
+
+// resolveBoolSwitchDefaultFalse is resolveBoolSwitch for switches that are off unless enabled.
+func resolveBoolSwitchDefaultFalse(name string, fromFile *bool) (bool, error) {
+	return resolveBoolSwitchWithDefault(name, fromFile, false)
+}
+
 // resolveBoolSwitch returns the environment value of name when set, else the file value, else true.
 // An unparsable environment value is an error (a typo must not silently keep or drop a safeguard).
 func resolveBoolSwitch(name string, fromFile *bool) (bool, error) {
+	return resolveBoolSwitchWithDefault(name, fromFile, true)
+}
+
+func resolveBoolSwitchWithDefault(name string, fromFile *bool, def bool) (bool, error) {
 	if raw := os.Getenv(name); raw != "" {
 		v, err := strconv.ParseBool(raw)
 		if err != nil {
@@ -441,7 +507,7 @@ func resolveBoolSwitch(name string, fromFile *bool) (bool, error) {
 	if fromFile != nil {
 		return *fromFile, nil
 	}
-	return true, nil
+	return def, nil
 }
 
 func loadConfigFile(path string) (*ConfigFile, error) {

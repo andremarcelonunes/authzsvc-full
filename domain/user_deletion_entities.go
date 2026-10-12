@@ -157,7 +157,16 @@ type AnonymizedUser struct {
 	AnonymizedAt      time.Time `json:"anonymized_at"`
 	RetainedForReason string    `json:"retained_for_reason"` // Legal/regulatory reason
 	RetainedUntil     *time.Time `json:"retained_until"`
+
+	// PasswordHash is what the users row gets as its password. It is not stored in anonymized_users.
+	// Empty means UnusablePasswordHash.
+	PasswordHash string `json:"-" gorm:"-"`
 }
+
+// UnusablePasswordHash replaces the password of an anonymised account. It is not a valid bcrypt
+// hash, so PasswordService.Verify (bcrypt compare) fails for every input at once and without the
+// cost of hashing; a leaked hash or a future password change flow can never match it either.
+const UnusablePasswordHash = "!"
 
 // DeletionAuditLog tracks all deletion-related activities for compliance
 type DeletionAuditLog struct {

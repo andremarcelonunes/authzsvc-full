@@ -129,3 +129,9 @@ type LGPDComplianceChecker interface {
 	// Generate compliance report
 	GenerateComplianceReport(ctx context.Context, userID uint) (map[string]interface{}, error)
 }
+
+// AccountStateInvalidator drops cached and transient state keyed by a deleted account: the
+// identity cache entry and the pending OTP keys. It is best effort and must not scan the keyspace.
+type AccountStateInvalidator interface {
+	InvalidateAccount(ctx context.Context, userID uint, phone string) error
+}
