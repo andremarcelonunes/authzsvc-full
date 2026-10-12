@@ -30,6 +30,8 @@ type OTPConfig struct {
 	// Secret keys the digest under which codes are stored in Redis (the JWT secret in production).
 	// Empty: a random per-process key is used. Codes are never stored in clear.
 	Secret string
+	// Brand opens the SMS text (SMS_BRAND); empty means domain.DefaultSMSBrand.
+	Brand string
 }
 
 // otpResendThrottledError keeps the human-readable wait message while matching
@@ -72,18 +74,21 @@ func (s *OTPServiceImpl) sendSMS(ctx context.Context, to, message string) error 
 // OTPMessage is the SMS text of a code. Every text is a single GSM-7 segment: no accented letters
 // outside the GSM-7 alphabet (so no a-acute, a-circumflex, tilde, i-acute, o-acute, u-acute, e-circumflex,
 // o-circumflex), and well under 160 characters.
-func OTPMessage(purpose domain.OTPPurpose, code string, ttl time.Duration) string {
+func OTPMessage(brand string, purpose domain.OTPPurpose, code string, ttl time.Duration) string {
+	if brand == "" {
+		brand = domain.DefaultSMSBrand
+	}
 	minutes := int(ttl.Minutes())
 	if minutes < 1 {
 		minutes = 1
 	}
 	switch purpose {
 	case domain.OTPPurposePasswordReset:
-		return fmt.Sprintf("Eldery: codigo para redefinir a senha %s. Valido por %d min. Nao compartilhe.", code, minutes)
+		return fmt.Sprintf("%s: codigo para redefinir a senha %s. Valido por %d min. Nao compartilhe.", brand, code, minutes)
 	case domain.OTPPurposePasswordChange:
-		return fmt.Sprintf("Eldery: codigo para confirmar a troca de senha %s. Valido por %d min. Nao compartilhe.", code, minutes)
+		return fmt.Sprintf("%s: codigo para confirmar a troca de senha %s. Valido por %d min. Nao compartilhe.", brand, code, minutes)
 	default:
-		return fmt.Sprintf("Eldery: codigo de verificacao %s. Valido por %d min. Nao compartilhe.", code, minutes)
+		return fmt.Sprintf("%s: codigo de verificacao %s. Valido por %d min. Nao compartilhe.", brand, code, minutes)
 	}
 }
 
@@ -118,7 +123,7 @@ func (s *OTPServiceImpl) Generate(ctx context.Context, phone string, userID uint
 	}
 
 	// Send SMS notification (the budget is consulted inside the notifier)
-	message := OTPMessage(domain.OTPPurposeFrom(ctx), code, s.config.TTL)
+	message := OTPMessage(s.config.Brand, domain.OTPPurposeFrom(ctx), code, s.config.TTL)
 	if err := s.sendSMS(ctx, phone, message); err != nil {
 		var limit *domain.SMSLimitError
 		if validCodeOut == 1 && (errors.As(err, &limit) || errors.Is(err, domain.ErrSMSUnavailable)) {

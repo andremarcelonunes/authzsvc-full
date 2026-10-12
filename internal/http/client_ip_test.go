@@ -58,3 +58,39 @@ func TestClientIP_ForgedForwardedForIsIgnoredByDefault(t *testing.T) {
 		t.Errorf("the address must be the TCP peer 198.51.100.7, a forged header changed it to %q", got)
 	}
 }
+
+func TestClientIP_NoHeaderConfiguredUsesThePeerWhateverTheClientSends(t *testing.T) {
+	got := seenAddress(t, func(r *gin.Engine) { ApplyClientIPPolicy(r, "") },
+		map[string]string{"X-Forwarded-For": "6.6.6.6", "X-Envoy-External-Address": "9.9.9.9"})
+	if got != "198.51.100.7" {
+		t.Errorf("with CLIENT_IP_HEADER empty the address is the TCP peer, got %q", got)
+	}
+}
+
+func TestClientIP_ConfiguredHeaderIsUsedAndForwardedForStillIgnored(t *testing.T) {
+	configure := func(r *gin.Engine) { ApplyClientIPPolicy(r, "X-Envoy-External-Address") }
+	got := seenAddress(t, configure, map[string]string{"X-Envoy-External-Address": "203.0.113.20", "X-Forwarded-For": "6.6.6.6", "X-Real-IP": "8.8.8.8"})
+	if got != "203.0.113.20" {
+		t.Errorf("the configured gateway header must win, got %q", got)
+	}
+	// Header absent (a request that did not come through the gateway): the TCP peer, never X-Forwarded-For.
+	got = seenAddress(t, configure, map[string]string{"X-Forwarded-For": "6.6.6.6"})
+	if got != "198.51.100.7" {
+		t.Errorf("without the gateway header the TCP peer applies, got %q", got)
+	}
+}
+
+func TestClientIP_EnhancedRouterIsStrictToo(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := BuildEnhancedRouter(nil, nil, handlers.NewExternalAuthzHandlers(mocks.NewMockTokenService(), mocks.NewMockSessionRepository(), nil, nil),
+		middleware.NewAuthMW(mocks.NewMockTokenService(), mocks.NewMockSessionRepository()), allowAll{}, MiddlewareConfig{}, MiddlewareDependencies{})
+	r.GET("/ip", func(c *gin.Context) { c.String(200, c.ClientIP()) })
+	req := httptest.NewRequest(http.MethodGet, "/ip", nil)
+	req.RemoteAddr = "198.51.100.7:1"
+	req.Header.Set("X-Forwarded-For", "6.6.6.6")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Body.String() != "198.51.100.7" {
+		t.Errorf("the enhanced router must not trust X-Forwarded-For, got %q", w.Body.String())
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -21,6 +22,9 @@ type OwnershipRule struct {
 type AppConfig struct {
 	Port    int    `yaml:"port"`
 	GinMode string `yaml:"gin_mode"`
+	// ClientIPHeader: request header carrying the caller address, written by the trusted gateway
+	// (CLIENT_IP_HEADER). Empty: the TCP peer. Never X-Forwarded-For, which clients can forge.
+	ClientIPHeader string `yaml:"client_ip_header"`
 }
 
 type DatabaseConfig struct {
@@ -180,6 +184,7 @@ type SMSBudgetFileConfig struct {
 	MaxPerPhonePerDay    *int   `yaml:"max_per_phone_per_day"`
 	MaxPerPhonePer30Days *int   `yaml:"max_per_phone_per_30_days"`
 	MinIntervalPerPhone  string `yaml:"min_interval_per_phone"`
+	Brand                string `yaml:"brand"` // SMS_BRAND
 	MaxPerIPPerDay       *int   `yaml:"max_per_ip_per_day"`
 	GlobalDailyCap       *int   `yaml:"global_daily_cap"`
 	GlobalMonthlyCap     *int   `yaml:"global_monthly_cap"`
@@ -257,6 +262,12 @@ type Config struct {
 
 	// SMSBudget bounds the SMS sent (SMS_* variables, "sms_budget" section); strict defaults.
 	SMSBudget domain.SMSLimits
+
+	// SMSBrand opens every code SMS (SMS_BRAND, default TocomVC); GSM-7 only, at most 11 characters.
+	SMSBrand string
+
+	// ClientIPHeader (CLIENT_IP_HEADER, yaml app.client_ip_header): the gateway header with the caller address; empty = TCP peer.
+	ClientIPHeader string
 }
 
 func env(k, def string) string {
@@ -340,6 +351,18 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	smsBrand := env("SMS_BRAND", configFile.SMSBudget.Brand)
+	if smsBrand == "" {
+		smsBrand = domain.DefaultSMSBrand
+	}
+	if err := domain.ValidateSMSBrand(smsBrand); err != nil {
+		return nil, fmt.Errorf("invalid SMS_BRAND %q: %w", smsBrand, err)
+	}
+	clientIPHeader, err := loadClientIPHeader(configFile.App.ClientIPHeader)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		Port:             fmt.Sprintf("%d", configFile.App.Port),
 		DSN:              configFile.Database.DSN,
@@ -369,6 +392,8 @@ func Load() (*Config, error) {
 		SelfDeletion:     selfDeletion,
 		OTPLogCodes:      otpLogCodes,
 		SMSBudget:        smsBudget,
+		SMSBrand:         smsBrand,
+		ClientIPHeader:   clientIPHeader,
 	}, nil
 }
 
@@ -514,6 +539,18 @@ func loadSelfDeletionConfig(fromFile SelfDeletionFileConfig) (SelfDeletionConfig
 		minAge = d
 	}
 	return SelfDeletionConfig{Immediate: immediate, MinAccountAge: minAge, RequirePassword: requirePassword}, nil
+}
+
+// loadClientIPHeader applies CLIENT_IP_HEADER over app.client_ip_header. The empty default trusts
+// no header. The value must be a plain header name.
+func loadClientIPHeader(fromFile string) (string, error) {
+	header := strings.TrimSpace(env("CLIENT_IP_HEADER", fromFile))
+	for _, r := range header {
+		if !(r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return "", fmt.Errorf("invalid CLIENT_IP_HEADER %q: expected a header name such as X-Envoy-External-Address", header)
+		}
+	}
+	return header, nil
 }
 
 // loadSMSBudgetConfig applies the SMS_* environment variables over the optional sms_budget section

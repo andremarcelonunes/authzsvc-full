@@ -260,22 +260,38 @@ func TestSMSPaths_OnlyTheOTPServiceSendsSMS(t *testing.T) {
 	})
 }
 
-// Every code SMS is a single GSM-7 segment: only characters of the GSM 03.38 basic alphabet, at most 160.
+// Every code SMS is a single GSM-7 segment: only characters of the GSM 03.38 basic alphabet, at most
+// 160, also with the longest allowed brand.
 func TestOTPMessages_AreSingleGSM7Segments(t *testing.T) {
-	const gsm7 = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
-	for _, purpose := range []domain.OTPPurpose{domain.OTPPurposeVerification, domain.OTPPurposePasswordReset, domain.OTPPurposePasswordChange, ""} {
-		msg := OTPMessage(purpose, "123456", 5*time.Minute)
-		t.Log(msg)
-		for _, r := range msg {
-			if !strings.ContainsRune(gsm7, r) {
-				t.Errorf("%q: character %q is not in the GSM-7 alphabet (forces UCS-2)", msg, r)
+	brands := []string{"", domain.DefaultSMSBrand, "WWWWWWWWWWW" /* 11, the longest */, "ÅÆÉÑÜÖÄØÇÉ§"}
+	for _, brand := range brands {
+		if brand != "" {
+			if err := domain.ValidateSMSBrand(brand); err != nil {
+				t.Fatalf("test brand %q must be valid: %v", brand, err)
 			}
 		}
-		if utf8.RuneCountInString(msg) > 160 || !strings.Contains(msg, "123456") {
-			t.Errorf("%q: too long or missing the code", msg)
+		for _, purpose := range []domain.OTPPurpose{domain.OTPPurposeVerification, domain.OTPPurposePasswordReset, domain.OTPPurposePasswordChange, ""} {
+			msg := OTPMessage(brand, purpose, "123456", 5*time.Minute)
+			t.Log(msg)
+			if !domain.IsGSM7(msg) {
+				t.Errorf("%q has a character outside the GSM-7 alphabet (forces UCS-2)", msg)
+			}
+			if utf8.RuneCountInString(msg) > 160 || !strings.Contains(msg, "123456") {
+				t.Errorf("%q: too long or missing the code", msg)
+			}
+			want := brand
+			if want == "" {
+				want = domain.DefaultSMSBrand
+			}
+			if !strings.HasPrefix(msg, want+": ") {
+				t.Errorf("%q must open with the brand %q", msg, want)
+			}
 		}
 	}
-	if !strings.Contains(OTPMessage(domain.OTPPurposeVerification, "1", 30*time.Second), "1 min") {
+	if !strings.Contains(OTPMessage("", domain.OTPPurposeVerification, "1", 30*time.Second), "1 min") {
 		t.Error("a lifetime under a minute is shown as 1 min")
+	}
+	if strings.Contains(OTPMessage("", domain.OTPPurposeVerification, "1", time.Minute), "Eldery") {
+		t.Error("the product is TocomVC")
 	}
 }

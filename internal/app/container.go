@@ -137,6 +137,7 @@ func (c *Container) initServices() error {
 		MaxAttempts:  c.Config.OTP_MaxAttempts,
 		ResendWindow: c.Config.OTP_ResendWindow,
 		Secret:       c.Config.JWTSecret,
+		Brand:        c.Config.SMSBrand,
 	}
 	c.OTPSvc = services.NewOTPService(c.NotificationSvc, c.UserRepo, c.RedisClient, otpConfig)
 

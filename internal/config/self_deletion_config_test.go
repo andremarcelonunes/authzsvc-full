@@ -137,3 +137,33 @@ func TestLoadSMSBudgetConfig_Invalid(t *testing.T) {
 		t.Error("a negative interval must be rejected")
 	}
 }
+
+func TestLoadClientIPHeader(t *testing.T) {
+	if h, err := loadClientIPHeader(""); err != nil || h != "" {
+		t.Errorf("the default trusts no header: %q %v", h, err)
+	}
+	if h, err := loadClientIPHeader(" X-Envoy-External-Address "); err != nil || h != "X-Envoy-External-Address" {
+		t.Errorf("file value: %q %v", h, err)
+	}
+	t.Setenv("CLIENT_IP_HEADER", "X-Real-Peer")
+	if h, _ := loadClientIPHeader("X-Envoy-External-Address"); h != "X-Real-Peer" {
+		t.Errorf("env must override file, got %q", h)
+	}
+	t.Setenv("CLIENT_IP_HEADER", "X-Bad Header: 1")
+	if _, err := loadClientIPHeader(""); err == nil {
+		t.Error("a value that is not a header name must be rejected")
+	}
+}
+
+func TestValidateSMSBrand(t *testing.T) {
+	for _, ok := range []string{domain.DefaultSMSBrand, "A", "WWWWWWWWWWW", "Café"} {
+		if err := domain.ValidateSMSBrand(ok); err != nil {
+			t.Errorf("%q must be valid: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "   ", "WWWWWWWWWWWW" /* 12 */, "Tocomvê", "São Paulo", "a\nb", "日本"} {
+		if err := domain.ValidateSMSBrand(bad); err == nil {
+			t.Errorf("%q must be rejected", bad)
+		}
+	}
+}

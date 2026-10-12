@@ -3,7 +3,10 @@ package domain
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // SMSLimits bounds the SMS the installation may send. Every value is mandatory (a zero cap would
@@ -115,4 +118,37 @@ func WithClientIP(ctx context.Context, ip string) context.Context {
 func ClientIPFrom(ctx context.Context) string {
 	ip, _ := ctx.Value("client_ip").(string)
 	return ip
+}
+
+// DefaultSMSBrand is the product name that opens every code SMS.
+const DefaultSMSBrand = "TocomVC"
+
+// MaxSMSBrandLength keeps the sender name short, so the text stays one segment.
+const MaxSMSBrandLength = 11
+
+// gsm7Basic is the GSM 03.38 basic alphabet (line breaks excluded). A text made only of these
+// characters is sent as a GSM-7 segment (160 characters); any other character forces UCS-2 (70).
+const gsm7Basic = "@£$¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
+
+// IsGSM7 reports whether every character of s is in the GSM-7 basic alphabet.
+func IsGSM7(s string) bool {
+	for _, r := range s {
+		if !strings.ContainsRune(gsm7Basic, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateSMSBrand checks SMS_BRAND: not empty, at most 11 characters, GSM-7 characters only.
+func ValidateSMSBrand(brand string) error {
+	switch {
+	case strings.TrimSpace(brand) == "":
+		return errors.New("must not be empty")
+	case utf8.RuneCountInString(brand) > MaxSMSBrandLength:
+		return fmt.Errorf("must have at most %d characters", MaxSMSBrandLength)
+	case !IsGSM7(brand):
+		return errors.New("must use only GSM-7 characters (no accents like á ã õ ê ô í ó ú, which make the SMS UCS-2)")
+	}
+	return nil
 }
