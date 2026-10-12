@@ -125,7 +125,7 @@ func Run(cfg *config.Config) error {
 		EnableLegalHoldChecks: true,
 		EnableContractChecks: true,
 		EnableRegulatoryChecks: true,
-		MinimumAccountAge: 24 * time.Hour,
+		MinimumAccountAge: cfg.SelfDeletion.MinAccountAge, // SELF_DELETION_MIN_ACCOUNT_AGE (default 24h, 0 = no minimum)
 		CoolingOffPeriod: 24 * time.Hour,
 	}
 	lgpdComplianceChecker := services.NewLGPDComplianceService(userRepo, auditRepo, lgpdConfig)
@@ -133,7 +133,10 @@ func Run(cfg *config.Config) error {
 	// Initialize user deletion service with production LGPD-compliant scheduling
 	deletionConfig := services.DefaultUserDeletionConfig()
 	deletionConfig.TestingMode = false // Production mode - enforce LGPD scheduling constraints
-	log.Println("LGPD: Production mode - enforcing standard 30-day grace period and retention policies")
+	deletionConfig.SelfDeletionImmediate = cfg.SelfDeletion.Immediate     // SELF_DELETION_IMMEDIATE (default false)
+	deletionConfig.RequirePassword = cfg.SelfDeletion.RequirePassword      // SELF_DELETION_REQUIRE_PASSWORD (default false)
+	log.Printf("LGPD: Production mode - %s grace period and retention policies; self-deletion immediate=%t require_password=%t min_account_age=%s",
+		deletionConfig.GracePeriod, cfg.SelfDeletion.Immediate, cfg.SelfDeletion.RequirePassword, cfg.SelfDeletion.MinAccountAge)
 	
 	userDeletionSvc := services.NewUserDeletionService(
 		extendedUserRepo,
@@ -145,6 +148,8 @@ func Run(cfg *config.Config) error {
 		auditSvc,
 		sessionRepo,
 		deletionConfig,
+		services.WithDeletionPasswordService(passwordSvc),
+		services.WithAccountStateInvalidator(identity.NewAccountInvalidator(rdb)),
 	)
 
 	// CB-182: Initialize validation services

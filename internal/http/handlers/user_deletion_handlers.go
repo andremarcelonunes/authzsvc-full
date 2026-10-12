@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -34,6 +35,17 @@ type RequestDeletionRequest struct {
 	DeletionType string `json:"deletion_type" binding:"required,oneof=full_delete soft_delete anonymization deactivation export_delete"`
 	Reason       string `json:"reason" binding:"required,min=10,max=500"`
 	Confirm      bool   `json:"confirm" binding:"required"`
+	// Password is only read when SELF_DELETION_REQUIRE_PASSWORD is on.
+	Password string `json:"password"`
+}
+
+// immediateDeletionRequest is the payload when SELF_DELETION_IMMEDIATE is on: deletion_type and
+// reason are optional (the effective type is always anonymization; reason defaults to "self-service").
+type immediateDeletionRequest struct {
+	DeletionType string `json:"deletion_type" binding:"omitempty,oneof=full_delete soft_delete anonymization deactivation export_delete"`
+	Reason       string `json:"reason" binding:"max=500"`
+	Confirm      bool   `json:"confirm" binding:"required"`
+	Password     string `json:"password"`
 }
 
 // RequestDeletion handles POST /users/me/deletion - LGPD Article 18, VI
@@ -81,7 +93,25 @@ func (h *UserDeletionHandlers) RequestDeletion(c *gin.Context) {
 	}
 
 	var req RequestDeletionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if h.deletionService.Immediate() {
+		var lenient immediateDeletionRequest
+		if err := c.ShouldBindJSON(&lenient); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "invalid request",
+				"details": err.Error(),
+			})
+			return
+		}
+		req = RequestDeletionRequest{
+			DeletionType: lenient.DeletionType,
+			Reason:       lenient.Reason,
+			Confirm:      lenient.Confirm,
+			Password:     lenient.Password,
+		}
+		if req.DeletionType == "" {
+			req.DeletionType = string(domain.DeletionTypeAnonymization)
+		}
+	} else if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "invalid request",
 			"details": err.Error(),
@@ -119,44 +149,109 @@ func (h *UserDeletionHandlers) RequestDeletion(c *gin.Context) {
 	}
 
 	// Create deletion request
-	deletionReq, err := h.deletionService.RequestDeletion(
+	deletionReq, existing, err := h.deletionService.RequestSelfDeletion(
 		c.Request.Context(),
 		userID,
 		requestType,
 		req.Reason,
+		req.Password,
 	)
 	if err != nil {
-		// Check if it's a compliance block
-		if containsString(err.Error(), "deletion blocked") {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": "deletion_blocked",
-				"message": err.Error(),
-				"lgpd_article": "Article 16 - Data retention for legal compliance",
-			})
-			return
-		}
+		h.respondDeletionError(c, err)
+		return
+	}
 
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "failed to create deletion request",
-			"details": err.Error(),
+	// Immediate mode: the account is already gone.
+	if deletionReq.Status == domain.DeletionStatusCompleted {
+		c.JSON(http.StatusOK, gin.H{
+			"data": gin.H{
+				"request_id": deletionReq.ID.String(),
+				"status":     deletionReq.Status,
+				"type":       deletionReq.RequestType,
+				"message":    "Account deleted.",
+			},
 		})
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
+	message := deletionRequestedMessage(h.deletionService.GracePeriod())
+	status := http.StatusCreated
+	if existing {
+		// An earlier request is still open: hand it back instead of stacking another.
+		status = http.StatusOK
+		message = "You already have an open deletion request. " + message
+	}
+	c.JSON(status, gin.H{
 		"data": gin.H{
 			"request_id": deletionReq.ID.String(),
 			"status": deletionReq.Status,
 			"type": deletionReq.RequestType,
 			"scheduled_for": deletionReq.ScheduledFor,
 			"retention_required": deletionReq.RetentionRequired,
-			"message": "Deletion request created. You have 30 days to cancel this request.",
+			"message": message,
 			"lgpd_rights": gin.H{
 				"article": "Article 18, VI",
 				"description": "Right to deletion of personal data",
 			},
 		},
 	})
+}
+
+// respondDeletionError maps RequestSelfDeletion errors to HTTP responses.
+func (h *UserDeletionHandlers) respondDeletionError(c *gin.Context, err error) {
+	var processing *services.DeletionProcessingError
+	switch {
+	case errors.Is(err, domain.ErrDeletionPasswordConfirmation):
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "password confirmation failed"})
+	case errors.Is(err, domain.ErrDeletionRoleBlocked):
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":   "deletion_blocked",
+			"message": "this kind of account cannot be deleted here",
+		})
+	case errors.As(err, &processing):
+		message := "Account deletion failed and nothing was deleted. Please try again."
+		if processing.AccountChanged {
+			message = "Account deletion could not be completed. Contact support and quote the request id."
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "deletion_failed",
+			"message":    message,
+			"request_id": processing.Request.ID.String(),
+		})
+	case containsString(err.Error(), "deletion blocked"):
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "deletion_blocked",
+			"message": err.Error(),
+			"lgpd_article": "Article 16 - Data retention for legal compliance",
+		})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to create deletion request",
+			"details": err.Error(),
+		})
+	}
+}
+
+// deletionRequestedMessage is the confirmation text of a scheduled request; the cancellation
+// window it mentions is the configured grace period.
+func deletionRequestedMessage(grace time.Duration) string {
+	if grace <= 0 {
+		return "Deletion request created."
+	}
+	return fmt.Sprintf("Deletion request created. You have %s to cancel this request.", describeDuration(grace))
+}
+
+// describeDuration renders whole days as "N days" ("1 day") and anything else with time.Duration.String.
+func describeDuration(d time.Duration) string {
+	const day = 24 * time.Hour
+	if d%day == 0 {
+		days := int(d / day)
+		if days == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", days)
+	}
+	return d.String()
 }
 
 // GetDeletionStatus handles GET /users/me/deletion/:id

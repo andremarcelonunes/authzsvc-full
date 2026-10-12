@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -25,7 +26,27 @@ type UserDeletionService struct {
 	auditService        domain.ComprehensiveAuditLogger
 	sessionRepo         domain.SessionRepository
 	config              *UserDeletionConfig
+	passwordService     domain.PasswordService
+	accountInvalidator  domain.AccountStateInvalidator
 }
+
+// UserDeletionOption configures optional collaborators of UserDeletionService.
+type UserDeletionOption func(*UserDeletionService)
+
+// WithDeletionPasswordService sets the service that verifies the password when
+// UserDeletionConfig.RequirePassword is on.
+func WithDeletionPasswordService(p domain.PasswordService) UserDeletionOption {
+	return func(s *UserDeletionService) { s.passwordService = p }
+}
+
+// WithAccountStateInvalidator sets the port that drops cached state (identity cache, pending OTPs)
+// of an anonymised account.
+func WithAccountStateInvalidator(i domain.AccountStateInvalidator) UserDeletionOption {
+	return func(s *UserDeletionService) { s.accountInvalidator = i }
+}
+
+// SelfServiceDeletionReason is the reason recorded when an immediate self-deletion carries none.
+const SelfServiceDeletionReason = "self-service"
 
 // UserDeletionConfig contains configuration for deletion service
 type UserDeletionConfig struct {
@@ -49,6 +70,12 @@ type UserDeletionConfig struct {
 	RequireMFA           bool
 	NotifyOnDeletion     bool
 	
+	// Self-service settings (POST /users/me/deletion); the defaults keep the scheduled flow.
+	// SelfDeletionImmediate: process a self-requested deletion inside the request (SELF_DELETION_IMMEDIATE).
+	SelfDeletionImmediate bool
+	// RequirePassword: the request must carry the account password (SELF_DELETION_REQUIRE_PASSWORD).
+	RequirePassword bool
+
 	// Testing settings
 	TestingMode bool // Bypasses time constraints for testing
 }
@@ -80,12 +107,13 @@ func NewUserDeletionService(
 	auditService domain.ComprehensiveAuditLogger,
 	sessionRepo domain.SessionRepository,
 	config *UserDeletionConfig,
+	opts ...UserDeletionOption,
 ) *UserDeletionService {
 	if config == nil {
 		config = DefaultUserDeletionConfig()
 	}
-	
-	return &UserDeletionService{
+
+	svc := &UserDeletionService{
 		userRepo:          userRepo,
 		deletionRepo:      deletionRepo,
 		exportRepo:        exportRepo,
@@ -96,37 +124,135 @@ func NewUserDeletionService(
 		sessionRepo:       sessionRepo,
 		config:            config,
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
-// RequestDeletion creates a new deletion request per LGPD Article 18
+// Immediate reports whether self-requested deletions are processed inside the request.
+func (s *UserDeletionService) Immediate() bool { return s.config.SelfDeletionImmediate }
+
+// GracePeriod is the time a scheduled self-requested deletion waits before it may be processed.
+func (s *UserDeletionService) GracePeriod() time.Duration { return s.config.GracePeriod }
+
+// DeletionProcessingError is returned by RequestSelfDeletion when an immediate deletion could not be
+// completed. The request row is left in status failed with the error recorded.
+type DeletionProcessingError struct {
+	Request *domain.DeletionRequest
+	// Stage names the step that failed: start, audit, sessions, anonymization, finalize.
+	Stage string
+	// AccountChanged is true when the account was already anonymised (nothing the user can retry);
+	// false when the account is intact (sessions may have been revoked: the user can sign in again).
+	AccountChanged bool
+	Err            error
+}
+
+func (e *DeletionProcessingError) Error() string {
+	return fmt.Sprintf("immediate deletion failed at %s: %v", e.Stage, e.Err)
+}
+
+func (e *DeletionProcessingError) Unwrap() error { return e.Err }
+
+// RequestDeletion creates a new deletion request per LGPD Article 18. It is RequestSelfDeletion
+// without a password and without the "already open" signal.
 func (s *UserDeletionService) RequestDeletion(
 	ctx context.Context,
 	userID uint,
 	requestType domain.DeletionRequestType,
 	reason string,
 ) (*domain.DeletionRequest, error) {
+	request, _, err := s.RequestSelfDeletion(ctx, userID, requestType, reason, "")
+	return request, err
+}
+
+// isSelfDeletionProtectedRole lists the accounts that cannot delete themselves through the immediate path.
+func isSelfDeletionProtectedRole(role string) bool {
+	switch role {
+	case domain.RoleAdmin, domain.RoleRoot, domain.RoleAttendant:
+		return true
+	}
+	return false
+}
+
+// verifySelfDeletionPassword enforces UserDeletionConfig.RequirePassword. It fails closed: with the
+// switch on and no password service wired, nobody can delete.
+func (s *UserDeletionService) verifySelfDeletionPassword(user *domain.User, password string) error {
+	if !s.config.RequirePassword {
+		return nil
+	}
+	if password == "" || s.passwordService == nil || !s.passwordService.Verify(user.PasswordHash, password) {
+		return domain.ErrDeletionPasswordConfirmation
+	}
+	return nil
+}
+
+// RequestSelfDeletion handles a deletion the account holder asked for.
+//
+// Scheduled mode (default): the request is stored, scheduled GracePeriod ahead, and returned; when
+// the user already has a pending or scheduled request that one is returned with existing=true and
+// nothing new is stored.
+//
+// Immediate mode (SelfDeletionImmediate): the effective type is always anonymization, and the request is
+// processed before returning: sessions are revoked first (failure aborts with nothing anonymised),
+// then the account is anonymised, then the request is marked completed. A failure leaves the request
+// failed and is returned as *DeletionProcessingError.
+func (s *UserDeletionService) RequestSelfDeletion(
+	ctx context.Context,
+	userID uint,
+	requestType domain.DeletionRequestType,
+	reason string,
+	password string,
+) (request *domain.DeletionRequest, existing bool, err error) {
 	// Verify user exists
-	_, err := s.userRepo.FindByID(ctx, userID)
+	user, err := s.userRepo.FindByID(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("user not found: %w", err)
+		return nil, false, fmt.Errorf("user not found: %w", err)
+	}
+	immediate := s.config.SelfDeletionImmediate
+	clientType := requestType // what the caller asked for, before any retention downgrade
+
+	if immediate && isSelfDeletionProtectedRole(user.Role) {
+		// Only logged: a security-category audit event would itself block the account's later
+		// deletions for 90 days (LGPDComplianceService.checkSecurityIncidents).
+		log.Printf("Immediate self-deletion refused for user %d (role %s)", userID, user.Role)
+		return nil, false, domain.ErrDeletionRoleBlocked
+	}
+
+	if err := s.verifySelfDeletionPassword(user, password); err != nil {
+		// Only logged, for the same reason as the role guard: a wrong password must not start a 90-day block.
+		log.Printf("Password confirmation failed for deletion request of user %d", userID)
+		return nil, false, err
 	}
 
 	// Check if deletion is allowed
 	canDelete, blockedReason, err := s.complianceChecker.CanDeleteUser(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("compliance check failed: %w", err)
+		return nil, false, fmt.Errorf("compliance check failed: %w", err)
 	}
 	if !canDelete {
 		// Audit the blocked deletion attempt
-		s.auditService.LogSecurityViolation(ctx, "deletion_blocked", domain.SecuritySeverityMedium, 
-			fmt.Sprintf("User deletion blocked: %s", blockedReason), &userID, "")
-		return nil, fmt.Errorf("deletion blocked: %s", blockedReason)
+		s.logSecurityViolation(ctx, "deletion_blocked", fmt.Sprintf("User deletion blocked: %s", blockedReason), userID)
+		return nil, false, fmt.Errorf("deletion blocked: %s", blockedReason)
 	}
 
 	// Check retention requirements
 	retentionPolicies, err := s.complianceChecker.GetRetentionRequirements(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check retention requirements: %w", err)
+		return nil, false, fmt.Errorf("failed to check retention requirements: %w", err)
+	}
+
+	// Scheduled mode: do not stack requests, hand back the open one.
+	if !immediate {
+		previous, err := s.deletionRepo.FindByUserID(ctx, userID)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to check open deletion requests: %w", err)
+		}
+		for _, open := range previous {
+			if open.Status == domain.DeletionStatusPending || open.Status == domain.DeletionStatusScheduled {
+				return open, true, nil
+			}
+		}
 	}
 
 	// Determine if we need to retain some data
@@ -154,8 +280,16 @@ func (s *UserDeletionService) RequestDeletion(
 		}
 	}
 
+	// Immediate mode always anonymises: the identifiers must be released. What the client asked for is kept in the audit row.
+	if immediate {
+		requestType = domain.DeletionTypeAnonymization
+		if reason == "" {
+			reason = SelfServiceDeletionReason
+		}
+	}
+
 	// Create deletion request
-	request := &domain.DeletionRequest{
+	request = &domain.DeletionRequest{
 		ID:                uuid.New(),
 		UserID:            userID,
 		RequestType:       requestType,
@@ -170,7 +304,7 @@ func (s *UserDeletionService) RequestDeletion(
 	}
 
 	// Schedule deletion for grace period
-	if s.config.GracePeriod > 0 {
+	if !immediate && s.config.GracePeriod > 0 {
 		scheduledTime := time.Now().Add(s.config.GracePeriod)
 		request.ScheduledFor = &scheduledTime
 		request.Status = domain.DeletionStatusScheduled
@@ -178,15 +312,19 @@ func (s *UserDeletionService) RequestDeletion(
 
 	// Save deletion request
 	if err := s.deletionRepo.Create(ctx, request); err != nil {
-		return nil, fmt.Errorf("failed to create deletion request: %w", err)
+		return nil, false, fmt.Errorf("failed to create deletion request: %w", err)
 	}
 
 	// Audit the deletion request
-	s.auditService.LogDataExport(ctx, userID, "deletion_request", "LGPD Article 18, VI", 1)
+	if err := s.auditService.LogDataExport(ctx, userID, "deletion_request", "LGPD Article 18, VI", 1); err != nil {
+		log.Printf("Warning: failed to audit deletion request %s of user %d: %v", request.ID, userID, err)
+	}
 
 	// Create audit log entry
 	metadataJSON, _ := json.Marshal(map[string]interface{}{
 		"request_type":       requestType,
+		"requested_type":     clientType,
+		"immediate":          immediate,
 		"retention_required": retentionRequired,
 	})
 	auditLog := &domain.DeletionAuditLog{
@@ -201,10 +339,108 @@ func (s *UserDeletionService) RequestDeletion(
 		CreatedAt:   time.Now(),
 	}
 	if s.auditRepo != nil {
-		s.auditRepo.Create(ctx, auditLog)
+		if err := s.auditRepo.Create(ctx, auditLog); err != nil {
+			if immediate {
+				// Nothing destructive has happened yet: refuse rather than delete without a trail.
+				return s.failImmediate(ctx, request, "audit", false, err)
+			}
+			log.Printf("Warning: failed to write deletion_requested audit row for request %s: %v", request.ID, err)
+		}
 	}
 
-	return request, nil
+	if immediate {
+		return s.processImmediate(ctx, request, user)
+	}
+	return request, false, nil
+}
+
+func (s *UserDeletionService) logSecurityViolation(ctx context.Context, event domain.SecurityEventType, description string, userID uint) {
+	if err := s.auditService.LogSecurityViolation(ctx, event, domain.SecuritySeverityMedium, description, &userID, ""); err != nil {
+		log.Printf("Warning: failed to audit %s for user %d: %v", event, userID, err)
+	}
+}
+
+// processImmediate runs an immediate self-deletion. It uses a context detached from the HTTP
+// request so a client that disconnects cannot interrupt it half way.
+func (s *UserDeletionService) processImmediate(ctx context.Context, request *domain.DeletionRequest, user *domain.User) (*domain.DeletionRequest, bool, error) {
+	ctx = context.WithoutCancel(ctx)
+
+	now := time.Now()
+	request.Status = domain.DeletionStatusProcessing
+	request.ProcessedAt = &now
+	if err := s.deletionRepo.Update(ctx, request); err != nil {
+		return s.failImmediate(ctx, request, "start", false, err)
+	}
+
+	// Revoke every session first: if that fails nothing has been anonymised yet.
+	if s.sessionRepo == nil {
+		return s.failImmediate(ctx, request, "sessions", false, errors.New("session repository not configured"))
+	}
+	if err := s.sessionRepo.DeleteAllForUser(ctx, request.UserID); err != nil {
+		return s.failImmediate(ctx, request, "sessions", false, fmt.Errorf("failed to revoke sessions: %w", err))
+	}
+
+	changed, err := s.anonymize(ctx, request, user.Phone, true)
+	if err != nil {
+		return s.failImmediate(ctx, request, "anonymization", changed, err)
+	}
+
+	completedAt := time.Now()
+	request.Status = domain.DeletionStatusCompleted
+	request.CompletedAt = &completedAt
+	if err := s.deletionRepo.Update(ctx, request); err != nil {
+		return s.failImmediate(ctx, request, "finalize", true, fmt.Errorf("failed to mark request completed: %w", err))
+	}
+
+	// The account is gone and the request is closed: from here an audit failure is only logged.
+	if s.auditRepo != nil {
+		if err := s.auditRepo.Create(ctx, &domain.DeletionAuditLog{
+			ID:          uuid.New(),
+			RequestID:   request.ID,
+			UserID:      request.UserID,
+			Action:      "deletion_completed",
+			PerformedBy: fmt.Sprintf("user_%d", request.UserID),
+			PerformedAt: time.Now(),
+			Result:      "success",
+			CreatedAt:   time.Now(),
+		}); err != nil {
+			log.Printf("Warning: failed to write deletion_completed audit row for request %s: %v", request.ID, err)
+		}
+	}
+	return request, false, nil
+}
+
+// failImmediate leaves the request failed with the error recorded (in the request and in an audit row)
+// and wraps the cause in a *DeletionProcessingError.
+func (s *UserDeletionService) failImmediate(ctx context.Context, request *domain.DeletionRequest, stage string, accountChanged bool, cause error) (*domain.DeletionRequest, bool, error) {
+	request.Status = domain.DeletionStatusFailed
+	failure := map[string]interface{}{"error": cause.Error(), "stage": stage, "account_changed": accountChanged}
+	if len(request.AnonymizationLog) > 0 {
+		failure["anonymization"] = json.RawMessage(request.AnonymizationLog)
+	}
+	if raw, err := json.Marshal(failure); err == nil {
+		request.AnonymizationLog = datatypes.JSON(raw)
+	}
+	if err := s.deletionRepo.Update(ctx, request); err != nil {
+		log.Printf("Warning: failed to mark deletion request %s as failed: %v", request.ID, err)
+	}
+	if s.auditRepo != nil {
+		if err := s.auditRepo.Create(ctx, &domain.DeletionAuditLog{
+			ID:           uuid.New(),
+			RequestID:    request.ID,
+			UserID:       request.UserID,
+			Action:       "deletion_failed",
+			PerformedBy:  fmt.Sprintf("user_%d", request.UserID),
+			PerformedAt:  time.Now(),
+			Result:       "error",
+			ErrorMessage: fmt.Sprintf("%s: %v", stage, cause),
+			CreatedAt:    time.Now(),
+		}); err != nil {
+			log.Printf("Warning: failed to write deletion_failed audit row for request %s: %v", request.ID, err)
+		}
+	}
+	log.Printf("Immediate deletion of user %d failed at %s: %v", request.UserID, stage, cause)
+	return request, false, &DeletionProcessingError{Request: request, Stage: stage, AccountChanged: accountChanged, Err: cause}
 }
 
 // ProcessDeletionRequest executes a pending deletion request
@@ -384,8 +620,24 @@ func (s *UserDeletionService) performSoftDeletion(ctx context.Context, request *
 	return nil
 }
 
-// performAnonymization replaces PII with anonymous data
+// performAnonymization replaces PII with anonymous data (admin and scheduled paths).
 func (s *UserDeletionService) performAnonymization(ctx context.Context, request *domain.DeletionRequest) error {
+	phone := ""
+	if user, err := s.userRepo.FindByID(ctx, request.UserID); err == nil && user != nil {
+		phone = user.Phone
+	}
+	_, err := s.anonymize(ctx, request, phone, false)
+	return err
+}
+
+// anonymize replaces the account's identifiers, makes its password unusable, revokes sessions,
+// anonymises the audit trail and drops cached state. It reports whether the account row was changed.
+//
+// strict (immediate self-deletion) turns a failed session sweep after the anonymisation into an error;
+// otherwise it is logged, as it always was. Failures of the audit-log anonymisation and of the cache
+// invalidation never fail the operation: they are logged and recorded as warnings in the request's
+// anonymization log.
+func (s *UserDeletionService) anonymize(ctx context.Context, request *domain.DeletionRequest, phone string, strict bool) (bool, error) {
 	// Generate anonymous identifiers
 	anonymousID := s.generateAnonymousID(request.UserID)
 	anonymousEmail := fmt.Sprintf("deleted_user_%d@anonymous.local", request.UserID)
@@ -397,6 +649,7 @@ func (s *UserDeletionService) performAnonymization(ctx context.Context, request 
 		AnonymousID:       anonymousID,
 		Email:             anonymousEmail,
 		Phone:             anonymousPhone,
+		PasswordHash:      domain.UnusablePasswordHash,
 		AnonymizedAt:      time.Now(),
 		RetainedForReason: request.RetentionReason,
 		RetainedUntil:     request.RetentionUntil,
@@ -404,32 +657,59 @@ func (s *UserDeletionService) performAnonymization(ctx context.Context, request 
 
 	// Perform anonymization
 	if err := s.userRepo.Anonymize(ctx, request.UserID, anonymizedUser); err != nil {
-		return fmt.Errorf("anonymization failed: %w", err)
+		return false, fmt.Errorf("anonymization failed: %w", err)
 	}
 
-	// Log user out
-	s.sessionRepo.DeleteAllForUser(ctx, request.UserID)
+	var warnings []string
+	warn := func(format string, args ...interface{}) {
+		msg := fmt.Sprintf(format, args...)
+		log.Printf("Warning: user %d anonymization: %s", request.UserID, msg)
+		warnings = append(warnings, msg)
+	}
+
+	// Log user out (again: catches a session created while we were working)
+	if s.sessionRepo != nil {
+		if err := s.sessionRepo.DeleteAllForUser(ctx, request.UserID); err != nil {
+			if strict {
+				return true, fmt.Errorf("failed to revoke sessions after anonymization: %w", err)
+			}
+			warn("failed to revoke sessions: %v", err)
+		}
+	}
 
 	// Anonymize related data
-	s.cascadeDeletor.DeleteOrAnonymizeAuditLogs(ctx, request.UserID, true)
+	if _, err := s.cascadeDeletor.DeleteOrAnonymizeAuditLogs(ctx, request.UserID, true); err != nil {
+		warn("failed to anonymize audit logs: %v", err)
+	}
+
+	// Drop the identity cache entry and pending OTP keys
+	if s.accountInvalidator != nil {
+		if err := s.accountInvalidator.InvalidateAccount(ctx, request.UserID, phone); err != nil {
+			warn("failed to invalidate cached state: %v", err)
+		}
+	}
 
 	// Record anonymization details
+	metadata := map[string]interface{}{"anonymous_id": anonymousID}
+	if len(warnings) > 0 {
+		metadata["warnings"] = warnings
+	}
 	anonymizationDetails := domain.AnonymizationDetails{
-		FieldsAnonymized: []string{"email", "phone", "name", "ip_addresses"},
+		FieldsAnonymized: []string{"email", "phone", "password", "phone_verified", "name", "ip_addresses"},
 		Method:           s.config.AnonymizationMethod,
 		Timestamp:        time.Now(),
 		OriginalDataHash: s.hashUserData(request.UserID),
-		Metadata: map[string]interface{}{
-			"anonymous_id": anonymousID,
-		},
+		Metadata:         metadata,
 	}
 	anonymizationJSON, _ := json.Marshal(anonymizationDetails)
 	request.AnonymizationLog = datatypes.JSON(anonymizationJSON)
 
 	// Audit the anonymization
-	s.auditService.LogDataWrite(ctx, request.UserID, "user_anonymization", 1)
+	if err := s.auditService.LogDataWrite(ctx, request.UserID, "user_anonymization", 1); err != nil {
+		log.Printf("Warning: failed to audit anonymization of user %d: %v", request.UserID, err)
+	}
 
-	return nil
+	return true, nil
 }
 
 // performDeactivation only deactivates the account

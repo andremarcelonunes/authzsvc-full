@@ -91,13 +91,20 @@ func (r *ExtendedUserRepository) Anonymize(ctx context.Context, userID uint, ano
 			return fmt.Errorf("failed to create anonymized user record: %w", err)
 		}
 
-		// Update user record with anonymous data
+		// Update user record with anonymous data. The password can never match again and the
+		// phone is no longer verified (it now belongs to nobody).
+		passwordHash := anonymousData.PasswordHash
+		if passwordHash == "" {
+			passwordHash = domain.UnusablePasswordHash
+		}
 		result := tx.Model(&domain.User{}).
 			Where("id = ?", userID).
 			Updates(map[string]any{
-				"email":      anonymousData.Email,
-				"phone":      anonymousData.Phone,
-				"deleted_at": anonymousData.AnonymizedAt,
+				"email":          anonymousData.Email,
+				"phone":          anonymousData.Phone,
+				"password":       passwordHash,
+				"phone_verified": false,
+				"deleted_at":     anonymousData.AnonymizedAt,
 			})
 
 		if result.Error != nil {

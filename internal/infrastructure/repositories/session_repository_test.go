@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -814,5 +815,154 @@ func TestSessionRepositoryImpl_Integration(t *testing.T) {
 	// Test DeleteExpired (no-op)
 	if err := repo.DeleteExpired(ctx); err != nil {
 		t.Errorf("unexpected error from DeleteExpired: %v", err)
+	}
+}
+// putLegacySession stores a session the way the code did before the per-user index existed.
+func putLegacySession(t *testing.T, client *redis.Client, id string, userID uint) {
+	t.Helper()
+	data, err := json.Marshal(&domain.Session{ID: id, UserID: userID, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Set(context.Background(), "session:"+id, data, time.Hour).Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sessionExists(client *redis.Client, id string) bool {
+	return client.Exists(context.Background(), "session:"+id).Val() == 1
+}
+
+func TestSessionRepositoryImpl_UserIndex_MaintainedOnCreateAndDelete(t *testing.T) {
+	ctx := context.Background()
+	client := setupTestRedis(t)
+	repo := NewSessionRepository(client, time.Hour)
+
+	for _, id := range []string{"a", "b"} {
+		if err := repo.Create(ctx, &domain.Session{ID: id, UserID: 5, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	members := client.SMembers(ctx, "user_sessions:5").Val()
+	if len(members) != 2 {
+		t.Fatalf("expected both sessions in the index, got %v", members)
+	}
+	if ttl := client.TTL(ctx, "user_sessions:5").Val(); ttl <= 0 {
+		t.Errorf("the index must expire with the sessions, ttl=%v", ttl)
+	}
+	if client.Exists(ctx, "user_sessions:indexed_since").Val() != 1 {
+		t.Error("the indexed_since marker must be written")
+	}
+
+	if err := repo.Delete(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	members = client.SMembers(ctx, "user_sessions:5").Val()
+	if len(members) != 1 || members[0] != "b" {
+		t.Errorf("Delete must drop the session from the index, got %v", members)
+	}
+	if err := repo.Delete(ctx, "missing"); err != nil {
+		t.Errorf("deleting a missing session is not an error: %v", err)
+	}
+}
+
+func TestSessionRepositoryImpl_ExtendTTL_RaisesIndexTTL(t *testing.T) {
+	ctx := context.Background()
+	client := setupTestRedis(t)
+	repo := NewSessionRepository(client, time.Hour)
+	if err := repo.Create(ctx, &domain.Session{ID: "s", UserID: 6, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ExtendTTL(ctx, "s", 48*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if ttl := client.TTL(ctx, "user_sessions:6").Val(); ttl < 47*time.Hour {
+		t.Errorf("the index must live as long as the extended session, ttl=%v", ttl)
+	}
+}
+
+func TestSessionRepositoryImpl_DeleteAllForUser_UsesIndexWithoutScan(t *testing.T) {
+	ctx := context.Background()
+	client := setupTestRedis(t)
+	repo := NewSessionRepository(client, time.Hour)
+	for _, id := range []string{"x1", "x2"} {
+		if err := repo.Create(ctx, &domain.Session{ID: id, UserID: 9, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.Create(ctx, &domain.Session{ID: "other", UserID: 10, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	// Indexing started long ago: no legacy session can be alive, so the scan must not run.
+	client.Set(ctx, "user_sessions:indexed_since", time.Now().Add(-48*time.Hour).Unix(), 0)
+	// A session of user 9 that is NOT in the index is only reachable by scanning: it proves the scan is skipped.
+	putLegacySession(t, client, "unindexed", 9)
+
+	if err := repo.DeleteAllForUser(ctx, 9); err != nil {
+		t.Fatal(err)
+	}
+	if sessionExists(client, "x1") || sessionExists(client, "x2") {
+		t.Error("indexed sessions of the user must be deleted")
+	}
+	if !sessionExists(client, "other") {
+		t.Error("another user's session must remain")
+	}
+	if !sessionExists(client, "unindexed") {
+		t.Error("with a populated index and an old marker the scan must not run")
+	}
+	if client.Exists(ctx, "user_sessions:9").Val() != 0 {
+		t.Error("the index key must be removed")
+	}
+}
+
+func TestSessionRepositoryImpl_DeleteAllForUser_FallsBackToScanWhenIndexMissing(t *testing.T) {
+	ctx := context.Background()
+	client := setupTestRedis(t)
+	repo := NewSessionRepository(client, time.Hour)
+	putLegacySession(t, client, "old1", 11)
+	putLegacySession(t, client, "old2", 11)
+	putLegacySession(t, client, "old-other", 12)
+
+	if err := repo.DeleteAllForUser(ctx, 11); err != nil {
+		t.Fatal(err)
+	}
+	if sessionExists(client, "old1") || sessionExists(client, "old2") {
+		t.Error("sessions created before the index must be found by the scan")
+	}
+	if !sessionExists(client, "old-other") {
+		t.Error("another user's session must remain")
+	}
+}
+
+func TestSessionRepositoryImpl_DeleteAllForUser_ScansWhileLegacySessionsMayLive(t *testing.T) {
+	ctx := context.Background()
+	client := setupTestRedis(t)
+	repo := NewSessionRepository(client, time.Hour)
+	putLegacySession(t, client, "legacy", 13) // created before the deploy
+	// First indexed session just created: marker is younger than one session lifetime.
+	if err := repo.Create(ctx, &domain.Session{ID: "new", UserID: 13, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.DeleteAllForUser(ctx, 13); err != nil {
+		t.Fatal(err)
+	}
+	if sessionExists(client, "legacy") || sessionExists(client, "new") {
+		t.Error("both the legacy and the indexed session must be deleted")
+	}
+}
+
+func TestSessionRepositoryImpl_FindByID_ExpiredSessionLeavesIndex(t *testing.T) {
+	ctx := context.Background()
+	client := setupTestRedis(t)
+	repo := NewSessionRepository(client, time.Hour)
+	if err := repo.Create(ctx, &domain.Session{ID: "gone", UserID: 14, CreatedAt: time.Now().Add(-2 * time.Hour), ExpiresAt: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.FindByID(ctx, "gone"); err != domain.ErrSessionExpired {
+		t.Fatalf("expected ErrSessionExpired, got %v", err)
+	}
+	if client.SIsMember(ctx, "user_sessions:14", "gone").Val() {
+		t.Error("an expired session must be removed from the index")
 	}
 }
