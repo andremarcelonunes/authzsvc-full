@@ -63,6 +63,16 @@ func NewTestServerWithResolver(t *testing.T, suite *TestSuite, resolver domain.B
 type ServerOptions struct {
 	RequireRegistrationEmail bool
 	RequirePhoneVerification bool
+
+	// PasswordPolicy, when set, is the policy used by registration, admin creation, password
+	// change and reset (config PASSWORD_REQUIRE_COMPLEXITY / PASSWORD_MIN_LENGTH). nil keeps the
+	// legacy wiring of the older e2e tests.
+	PasswordPolicy *domain.PasswordPolicy
+	// PasswordResetByPhone is PASSWORD_RESET_REQUIRE_EMAIL=false.
+	PasswordResetByPhone bool
+	// Notifier receives the SMS the server would send; tests read the reset code from it.
+	// nil = a private mock.
+	Notifier *MockNotificationService
 }
 
 // DefaultServerOptions is the strict production default: e-mail required, phone verification required.
@@ -136,7 +146,10 @@ func createTestRouter(suite *TestSuite, resolver domain.BackendIdentityResolver,
 	)
 
 	// Use mock notification service for testing
-	notificationSvc := NewMockNotificationService()
+	notificationSvc := opts.Notifier
+	if notificationSvc == nil {
+		notificationSvc = NewMockNotificationService()
+	}
 
 	// Initialize repositories
 	userRepo := repositories.NewUserRepository(suite.DB)
@@ -191,12 +204,17 @@ func createTestRouter(suite *TestSuite, resolver domain.BackendIdentityResolver,
 	phoneAuthStrategy := services.NewPhoneAuthStrategy(userRepo, passwordSvc, identifierResolver, services.WithStrategyPhoneVerificationPolicy(phoneVerification))
 
 	// Initialize auth service with audit logging and CB-194 support
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis, requestValidator, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy, services.WithPhoneVerificationPolicy(phoneVerification))
+	authOpts := []services.AuthServiceOption{services.WithPhoneVerificationPolicy(phoneVerification)}
+	if opts.PasswordPolicy != nil {
+		authOpts = append(authOpts, services.WithPasswordPolicy(*opts.PasswordPolicy))
+	}
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, suite.Redis, requestValidator, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy, authOpts...)
 
 	// Initialize handlers
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo, tokenSvc, sessionRepo,
 		handlers.WithRequireRegistrationEmail(opts.RequireRegistrationEmail),
 		handlers.WithRequirePhoneVerification(opts.RequirePhoneVerification),
+		handlers.WithPasswordPolicyEnforced(opts.PasswordPolicy != nil),
 	)
 	polH := &handlers.PolicyHandlers{E: cas.E}
 	externalAuthzH := handlers.NewExternalAuthzHandlers(tokenSvc, sessionRepo, cas.E, resolver)
@@ -233,6 +251,7 @@ func createTestRouter(suite *TestSuite, resolver domain.BackendIdentityResolver,
 		sessionRepo,
 		auditSvc,
 		passwordChangeConfig,
+		passwordChangeOptions(opts)...,
 	)
 	passwordChangeH := handlers.NewPasswordChangeHandlers(passwordChangeSvc)
 
@@ -276,6 +295,18 @@ func createTestRouter(suite *TestSuite, resolver domain.BackendIdentityResolver,
 	_ = cas.E.SavePolicy()
 
 	return router, nil
+}
+
+// passwordChangeOptions maps the test server options to password change service options.
+func passwordChangeOptions(opts ServerOptions) []services.PasswordChangeOption {
+	var out []services.PasswordChangeOption
+	if opts.PasswordPolicy != nil {
+		out = append(out, services.WithPasswordChangePolicy(*opts.PasswordPolicy))
+	}
+	if opts.PasswordResetByPhone {
+		out = append(out, services.WithPasswordResetRequireEmail(false))
+	}
+	return out
 }
 
 // MockNotificationService provides a mock notification service for testing

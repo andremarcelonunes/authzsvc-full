@@ -38,6 +38,11 @@ type ValidationConfig struct {
 	LogValidationEvents     bool
 	EnableMetrics           bool
 	ShadowMode             bool // CB-182: Log violations but don't block requests
+
+	// RegistrationRequestsPerMinute is the per-IP budget of POST /auth/register in the HTTP
+	// layer (one-minute window). Zero keeps the historical 4 (= 2 per 30 seconds); wiring derives
+	// it from REGISTRATION_RATE_LIMIT_PER_IP / REGISTRATION_RATE_LIMIT_WINDOW.
+	RegistrationRequestsPerMinute int
 }
 
 // ValidationMetricsCollector interface for validation metrics
@@ -166,7 +171,11 @@ func (vm *ValidationMiddleware) ValidateRequest() gin.HandlerFunc {
 				phone, _ := requestMap["phone"].(string)
 				password, _ := requestMap["password"].(string)
 				role, _ := requestMap["role"].(string)
-				validationResult, validationErr = vm.requestValidator.ValidateRegistrationRequest(ctx, email, phone, password, role, validationCtx)
+				// The per-IP registration limit is counted once, by the auth service when it
+				// creates the account; counting it here as well made every sign-up use two slots.
+				formatOnly := *validationCtx
+				formatOnly.SkipRegistrationRateLimit = true
+				validationResult, validationErr = vm.requestValidator.ValidateRegistrationRequest(ctx, email, phone, password, role, &formatOnly)
 			} else {
 				validationResult, validationErr = vm.requestValidator.ValidateRequest(ctx, requestBody, validationCtx)
 			}
@@ -730,8 +739,12 @@ func (vm *ValidationMiddleware) isSensitiveHeader(headerName string) bool {
 
 func (vm *ValidationMiddleware) getRateLimitForEndpoint(endpoint string) int {
 	// Define rate limits per endpoint (per minute)
+	registerLimit := vm.config.RegistrationRequestsPerMinute
+	if registerLimit <= 0 {
+		registerLimit = domain.RegistrationRequestsPerMinute(0, 0)
+	}
 	rateLimits := map[string]int{
-		"/auth/register": 4,   // 4 registrations per minute (matches 2 per 30 seconds in service)
+		"/auth/register": registerLimit, // default 4 per minute (matches 2 per 30 seconds in service)
 		"/auth/login":    10,  // 10 login attempts per minute
 		"/auth/otp":      3,   // 3 OTP requests per minute
 		"/auth/refresh":  20,  // 20 token refreshes per minute

@@ -340,6 +340,10 @@ func (h *PasswordChangeHandlers) GetPasswordChangeHistory(c *gin.Context) {
 
 // InitiateForgotPassword handles POST /api/v1/password-reset
 func (h *PasswordChangeHandlers) InitiateForgotPassword(c *gin.Context) {
+	if !h.passwordChangeService.ResetRequiresEmail() {
+		h.initiatePhoneReset(c)
+		return
+	}
 	var req domain.ForgotPasswordInitiateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -375,6 +379,62 @@ func (h *PasswordChangeHandlers) InitiateForgotPassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"data": response,
 	})
+}
+
+// initiatePhoneReset is POST /password/reset when PASSWORD_RESET_REQUIRE_EMAIL=false: the phone
+// identifies the account and the answer is a constant, whether or not the account exists.
+func (h *PasswordChangeHandlers) initiatePhoneReset(c *gin.Context) {
+	var req domain.PhoneForgotPasswordInitiateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request format",
+			"message": err.Error(),
+			"code":    400,
+		})
+		return
+	}
+	response, err := h.passwordChangeService.InitiateForgotPasswordByPhone(
+		c.Request.Context(), req.Email, req.Phone)
+	if err != nil {
+		statusCode := getPasswordErrorStatusCode(err)
+		c.JSON(statusCode, gin.H{
+			"error":   getPasswordErrorCode(err),
+			"message": err.Error(),
+			"code":    statusCode,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": response})
+}
+
+// ResetPasswordByPhone handles POST /password/reset/confirm: phone + otp_code + new_password.
+// It exists only when PASSWORD_RESET_REQUIRE_EMAIL=false; otherwise it answers 404.
+func (h *PasswordChangeHandlers) ResetPasswordByPhone(c *gin.Context) {
+	if h.passwordChangeService.ResetRequiresEmail() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "message": "not found", "code": 404})
+		return
+	}
+	var req domain.PhoneResetCompleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request format",
+			"message": err.Error(),
+			"code":    400,
+		})
+		return
+	}
+	response, err := h.passwordChangeService.ResetPasswordByPhone(
+		c.Request.Context(), req.Phone, req.OTPCode, req.NewPassword, c.ClientIP(), c.GetHeader("User-Agent"))
+	if err != nil {
+		statusCode := getPasswordErrorStatusCode(err)
+		c.JSON(statusCode, gin.H{
+			"error":   getPasswordErrorCode(err),
+			"message": err.Error(),
+			"code":    statusCode,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": response})
 }
 
 // CompleteForgotPassword handles PUT /api/v1/password-reset/:id/complete
@@ -488,6 +548,7 @@ func getPasswordErrorStatusCode(err error) int {
 		domain.ErrForgotPasswordInvalidNonce,
 		domain.ErrForgotPasswordInvalidOTP,
 		domain.ErrEmailPhoneMismatch,
+		domain.ErrResetCodeInvalid,
 		domain.ErrInvalidUUID,
 		domain.ErrInvalidUserID,
 		domain.ErrInvalidInput,
@@ -521,6 +582,8 @@ func getPasswordErrorStatusCode(err error) int {
 
 func getPasswordErrorCode(err error) string {
 	switch err {
+	case domain.ErrResetCodeInvalid:
+		return "invalid_or_expired_code"
 	case domain.ErrCurrentPasswordIncorrect:
 		return "current_password_incorrect"
 	case domain.ErrPasswordSameAsCurrent:

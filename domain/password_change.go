@@ -103,6 +103,27 @@ type ForgotPasswordCompleteRequest struct {
 	ConfirmPassword string `json:"confirm_password" binding:"required"`
 }
 
+// PhoneForgotPasswordInitiateRequest starts the phone reset (PASSWORD_RESET_REQUIRE_EMAIL=false).
+// The e-mail is optional; when sent it must belong to the account identified by the phone.
+type PhoneForgotPasswordInitiateRequest struct {
+	Email string `json:"email,omitempty"`
+	Phone string `json:"phone" binding:"required"`
+}
+
+// PhoneResetCompleteRequest finishes the phone reset: phone + the code received by SMS + new password.
+type PhoneResetCompleteRequest struct {
+	Phone       string `json:"phone" binding:"required"`
+	OTPCode     string `json:"otp_code" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required"`
+}
+
+// PhoneResetResponse is the constant-shape answer of the phone reset steps. The "initiated"
+// answer is byte-identical whether or not the account exists.
+type PhoneResetResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 // PasswordChangeResponse represents the response for password change operations
 type PasswordChangeResponse struct {
 	RequestID string    `json:"request_id"`

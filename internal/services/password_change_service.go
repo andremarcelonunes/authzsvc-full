@@ -24,7 +24,43 @@ type PasswordChangeService struct {
 	sessionRepo         domain.SessionRepository
 	auditService        domain.ComprehensiveAuditService
 	config              PasswordChangeConfig
+
+	// passwordPolicy, when set, replaces the legacy per-field strength rules of config. It is
+	// the same policy object registration uses.
+	passwordPolicy *domain.PasswordPolicy
+	// phoneOnlyReset is PASSWORD_RESET_REQUIRE_EMAIL=false: the public reset identifies the
+	// account by phone (an e-mail, when sent, must still match). Default false = e-mail and
+	// phone must belong to the same user, exactly as before.
+	phoneOnlyReset     bool
+	identifierResolver domain.IdentifierResolutionService
 }
+
+// PasswordChangeOption customises a PasswordChangeService at construction.
+type PasswordChangeOption func(*PasswordChangeService)
+
+// WithPasswordChangePolicy makes change and reset use the shared password policy.
+func WithPasswordChangePolicy(policy domain.PasswordPolicy) PasswordChangeOption {
+	return func(s *PasswordChangeService) { s.passwordPolicy = &policy }
+}
+
+// WithPasswordResetRequireEmail sets PASSWORD_RESET_REQUIRE_EMAIL. true (the default) keeps the
+// e-mail + phone reset; false lets the phone alone identify the account.
+func WithPasswordResetRequireEmail(required bool) PasswordChangeOption {
+	return func(s *PasswordChangeService) { s.phoneOnlyReset = !required }
+}
+
+// WithIdentifierResolver sets the phone normalisation used by the phone-only reset (the same
+// one login uses). Defaults to NewIdentifierResolutionService().
+func WithIdentifierResolver(resolver domain.IdentifierResolutionService) PasswordChangeOption {
+	return func(s *PasswordChangeService) {
+		if resolver != nil {
+			s.identifierResolver = resolver
+		}
+	}
+}
+
+// ResetRequiresEmail reports PASSWORD_RESET_REQUIRE_EMAIL.
+func (s *PasswordChangeService) ResetRequiresEmail() bool { return !s.phoneOnlyReset }
 
 // PasswordChangeConfig contains configuration for password operations
 type PasswordChangeConfig struct {
@@ -73,8 +109,9 @@ func NewPasswordChangeService(
 	sessionRepo domain.SessionRepository,
 	auditService domain.ComprehensiveAuditService,
 	config PasswordChangeConfig,
+	opts ...PasswordChangeOption,
 ) *PasswordChangeService {
-	return &PasswordChangeService{
+	svc := &PasswordChangeService{
 		passwordChangeRepo:  passwordChangeRepo,
 		passwordHistoryRepo: passwordHistoryRepo,
 		forgotPasswordRepo:  forgotPasswordRepo,
@@ -84,7 +121,12 @@ func NewPasswordChangeService(
 		sessionRepo:         sessionRepo,
 		auditService:        auditService,
 		config:              config,
+		identifierResolver:  NewIdentifierResolutionService(),
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // InitiatePasswordChange initiates a password change request for an authenticated user
@@ -309,6 +351,100 @@ func (s *PasswordChangeService) CompletePasswordChange(ctx context.Context, user
 	}, nil
 }
 
+// phoneResetInitiatedMessage is the only answer of the phone reset request.
+const phoneResetInitiatedMessage = "If this phone number is registered, a verification code has been sent by SMS."
+
+// findResettableUserByPhone resolves the account for the phone reset: the phone is normalised
+// like at login, the account must be active and, when an e-mail was sent, it must match.
+// It returns nil for every other case without saying why.
+func (s *PasswordChangeService) findResettableUserByPhone(ctx context.Context, phone, email string) *domain.User {
+	normalized, err := s.identifierResolver.NormalizePhone(ctx, phone, "1")
+	if err != nil {
+		return nil
+	}
+	user, err := s.userRepo.FindByPhone(ctx, normalized)
+	if err != nil || user == nil || !user.IsActive {
+		return nil
+	}
+	if email = strings.TrimSpace(email); email != "" && !strings.EqualFold(email, user.Email) {
+		return nil
+	}
+	return user
+}
+
+// InitiateForgotPasswordByPhone starts the phone reset (PASSWORD_RESET_REQUIRE_EMAIL=false). The
+// answer is the same constant for known and unknown accounts. The code comes from the OTP
+// service (random, SMS, resend cooldown, TTL); throttling or SMS errors are swallowed so they
+// cannot reveal the account either. Unlike the e-mail flow it writes no forgot-password row (that
+// table is not created by AutoMigrate and its user_id foreign key rejects unknown accounts), so
+// the per-IP forgot-password limit does not apply; the per-phone resend cooldown of the OTP
+// service and the HTTP validation middleware's per-IP limit do.
+func (s *PasswordChangeService) InitiateForgotPasswordByPhone(ctx context.Context, email, phone string) (*domain.PhoneResetResponse, error) {
+	if !s.phoneOnlyReset {
+		return nil, domain.ErrPhoneResetNotEnabled
+	}
+	user := s.findResettableUserByPhone(ctx, phone, email)
+
+	if user != nil {
+		_, _ = s.otpService.Generate(ctx, user.Phone, user.ID)
+	}
+
+	return &domain.PhoneResetResponse{Status: "initiated", Message: phoneResetInitiatedMessage}, nil
+}
+
+// ResetPasswordByPhone finishes the phone reset: phone + SMS code + new password. Every failure
+// of the code step answers domain.ErrResetCodeInvalid. The code is single-use and burned after
+// OTP_MAX_ATTEMPTS wrong tries (OTP service); on success all sessions (and so all refresh
+// tokens) of the user are deleted.
+func (s *PasswordChangeService) ResetPasswordByPhone(ctx context.Context, phone, code, newPassword, ipAddress, userAgent string) (*domain.PhoneResetResponse, error) {
+	if !s.phoneOnlyReset {
+		return nil, domain.ErrPhoneResetNotEnabled
+	}
+
+	// Rules that do not depend on the account run first and do not consume the code.
+	if err := s.validatePasswordStrength(newPassword, ""); err != nil {
+		return nil, err
+	}
+
+	user := s.findResettableUserByPhone(ctx, phone, "")
+	if user == nil {
+		return nil, domain.ErrResetCodeInvalid
+	}
+	if ok, err := s.otpService.Verify(ctx, user.Phone, code, user.ID); err != nil || !ok {
+		return nil, domain.ErrResetCodeInvalid
+	}
+
+	// Account-dependent rules run after the code is verified, so they cannot be used to probe accounts.
+	if err := s.validatePasswordStrength(newPassword, user.Email); err != nil {
+		return nil, err
+	}
+	if err := s.checkPasswordHistory(ctx, user.ID, newPassword); err != nil {
+		return nil, err
+	}
+	newHash, err := s.passwordService.Hash(newPassword)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash new password: %w", err)
+	}
+	if err := s.passwordHistoryRepo.Add(ctx, user.ID, user.PasswordHash, "reset"); err != nil {
+		log.Printf("Failed to add password to history: %v", err)
+	}
+	user.PasswordHash = newHash
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return nil, fmt.Errorf("failed to update user password: %w", err)
+	}
+	if err := s.sessionRepo.DeleteAllForUser(ctx, user.ID); err != nil {
+		log.Printf("Warning: Failed to invalidate sessions for user %d: %v", user.ID, err)
+	}
+	s.passwordHistoryRepo.CleanupOldHistory(ctx, user.ID, s.config.PasswordHistoryCount)
+	if s.auditService != nil {
+		_ = s.auditService.LogSystemEvent(ctx, "password_reset_by_phone",
+			fmt.Sprintf("Password reset by phone for user %d", user.ID),
+			map[string]interface{}{"user_id": user.ID, "ip_address": ipAddress, "user_agent": userAgent})
+	}
+
+	return &domain.PhoneResetResponse{Status: "completed", Message: "Password reset successfully. You can now login with your new password."}, nil
+}
+
 // InitiateForgotPassword initiates a forgot password request
 func (s *PasswordChangeService) InitiateForgotPassword(ctx context.Context, email, phone, ipAddress, userAgent string) (*domain.PasswordChangeResponse, error) {
 	// Check rate limiting by IP
@@ -384,10 +520,9 @@ func (s *PasswordChangeService) CompleteForgotPassword(ctx context.Context, requ
 		return nil, err
 	}
 
-	// Check if user was found (userID is nil if user doesn't exist)
-	if request.UserID == nil {
-		return nil, domain.ErrEmailPhoneMismatch
-	}
+	// A request for an unknown account (UserID nil) must be indistinguishable from a wrong code:
+	// it goes through the same status, expiry, nonce and attempt checks and always fails as an
+	// invalid OTP (counting attempts), so this endpoint cannot be used to learn which accounts exist.
 
 	// Check request status
 	if request.Status != string(domain.ForgotPasswordStatusInitiated) {
@@ -414,7 +549,7 @@ func (s *PasswordChangeService) CompleteForgotPassword(ctx context.Context, requ
 	// For forgot password requests, OTP expiration is same as request expiration
 	// No separate OTP expiration check needed since IsExpired() already validated above
 
-	if request.OTPCode != otpCode {
+	if request.UserID == nil || request.OTPCode == "" || request.OTPCode != otpCode {
 		// Increment OTP attempts
 		request.OTPAttempts++
 		s.forgotPasswordRepo.UpdateOTPAttempts(ctx, requestID, request.OTPAttempts)
@@ -561,6 +696,9 @@ func (s *PasswordChangeService) GetPasswordChangeHistory(ctx context.Context, us
 // Helper methods
 
 func (s *PasswordChangeService) validatePasswordStrength(password, email string) error {
+	if s.passwordPolicy != nil {
+		return passwordPolicyError(s.passwordPolicy.Check(password, email))
+	}
 	if len(password) < s.config.MinPasswordLength {
 		return domain.ErrPasswordStrengthInsufficient
 	}
@@ -764,4 +902,19 @@ func containsSpecialChars(s string) bool {
 		}
 	}
 	return false
+}
+// passwordPolicyError maps the first policy violation to the domain error the change/reset
+// handlers already translate to HTTP 400.
+func passwordPolicyError(violations []domain.PasswordViolation) error {
+	if len(violations) == 0 {
+		return nil
+	}
+	switch violations[0].Code {
+	case domain.PasswordViolationForbidden:
+		return domain.ErrPasswordCommonlyUsed
+	case domain.PasswordViolationContainsEmail:
+		return domain.ErrPasswordContainsUserInfo
+	default:
+		return domain.ErrPasswordStrengthInsufficient
+	}
 }

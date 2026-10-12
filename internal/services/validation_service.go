@@ -24,6 +24,11 @@ type RequestValidationServiceImpl struct {
 	cacheTimeout         time.Duration
 	maxValidationTime    time.Duration
 	enableMetrics        bool
+
+	// Public registration rate limit per client IP: registrationLimit requests per
+	// registrationWindow (fixed windows). Defaults: 2 per 30 seconds.
+	registrationLimit  int
+	registrationWindow time.Duration
 }
 
 // RequestValidationConfig holds configuration for the validation service
@@ -32,6 +37,12 @@ type RequestValidationConfig struct {
 	CacheTimeout         time.Duration
 	MaxValidationTime    time.Duration
 	EnableMetrics        bool
+
+	// RegistrationRateLimit and RegistrationRateWindow bound public registrations per client IP
+	// (REGISTRATION_RATE_LIMIT_PER_IP / REGISTRATION_RATE_LIMIT_WINDOW). Zero values keep the
+	// historical 2 registrations per 30 seconds.
+	RegistrationRateLimit  int
+	RegistrationRateWindow time.Duration
 }
 
 // NewRequestValidationService creates a new request validation service
@@ -49,7 +60,16 @@ func NewRequestValidationService(
 		config.MaxValidationTime = 30 * time.Second
 	}
 
+	if config.RegistrationRateLimit <= 0 {
+		config.RegistrationRateLimit = domain.DefaultRegistrationRateLimitPerIP
+	}
+	if config.RegistrationRateWindow <= 0 {
+		config.RegistrationRateWindow = domain.DefaultRegistrationRateWindow
+	}
+
 	return &RequestValidationServiceImpl{
+		registrationLimit:     config.RegistrationRateLimit,
+		registrationWindow:    config.RegistrationRateWindow,
 		securityValidator:     securityValidator,
 		businessValidator:     businessValidator,
 		rateLimitValidator:    rateLimitValidator,
@@ -251,8 +271,9 @@ func (s *RequestValidationServiceImpl) ValidateRegistrationRequest(ctx context.C
 			return result, nil
 		}
 
-		// REGISTRATION BUSINESS RULE: Allow exactly 2 registration attempts per 30 seconds  
-		windowStart := time.Now().Truncate(30 * time.Second)
+		// REGISTRATION BUSINESS RULE: allow registrationLimit attempts per registrationWindow
+		// (default 2 per 30 seconds) for each client IP.
+		windowStart := time.Now().Truncate(s.registrationWindow)
 		rateLimitKey := fmt.Sprintf("registration_rate:%s:%d", validationCtx.IPAddress, windowStart.Unix())
 		fmt.Printf("DEBUG: REGISTRATION ValidateRegistrationRequest called for IP %s, key %s\n", validationCtx.IPAddress, rateLimitKey)
 		
@@ -262,7 +283,7 @@ func (s *RequestValidationServiceImpl) ValidateRegistrationRequest(ctx context.C
 			// Initialize key with 0 if it doesn't exist, then increment
 			exists := s.redisClient.Exists(ctx, rateLimitKey).Val()
 			if exists == 0 {
-				s.redisClient.Set(ctx, rateLimitKey, 0, 35*time.Second)
+				s.redisClient.Set(ctx, rateLimitKey, 0, s.registrationWindow+5*time.Second)
 			}
 			
 			// Get current count
@@ -276,12 +297,12 @@ func (s *RequestValidationServiceImpl) ValidateRegistrationRequest(ctx context.C
 			// For testing: simulate rate limiting based on IP address pattern
 			// This allows tests to verify rate limiting logic without Redis
 			if validationCtx.IPAddress == "192.168.1.101" {
-				currentCount = 2 // Simulate rate limit exceeded
+				currentCount = s.registrationLimit // Simulate rate limit exceeded
 			}
 		}
 		
-		// Check if we can allow this request (current + 1 <= 2)
-		if currentCount >= 2 {
+		// Check if we can allow this request (current + 1 <= limit)
+		if currentCount >= s.registrationLimit {
 			result.IsValid = false
 			result.Passed = false
 			result.Errors = append(result.Errors, domain.ValidationError{
@@ -296,9 +317,9 @@ func (s *RequestValidationServiceImpl) ValidateRegistrationRequest(ctx context.C
 			newCount := int64(currentCount + 1)
 			if s.redisClient != nil {
 				newCount = s.redisClient.Incr(ctx, rateLimitKey).Val()
-				s.redisClient.Expire(ctx, rateLimitKey, 35*time.Second)
+				s.redisClient.Expire(ctx, rateLimitKey, s.registrationWindow+5*time.Second)
 			}
-			fmt.Printf("SIMPLE: IP %s request %d/2 allowed\n", validationCtx.IPAddress, newCount)
+			fmt.Printf("SIMPLE: IP %s request %d/%d allowed\n", validationCtx.IPAddress, newCount, s.registrationLimit)
 		}
 	}
 

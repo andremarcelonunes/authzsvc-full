@@ -23,17 +23,9 @@ type BusinessValidationServiceImpl struct {
 	userLimits       UserLimitsConfig
 }
 
-// PasswordPolicy defines password complexity requirements
-type PasswordPolicy struct {
-	MinLength           int
-	MaxLength           int
-	RequireUppercase    bool
-	RequireLowercase    bool
-	RequireNumbers      bool
-	RequireSpecialChars bool
-	ForbiddenPasswords  []string
-	MaxRepeatingChars   int
-}
+// PasswordPolicy is the single password rule set (see domain.PasswordPolicy), shared with the
+// password change and reset flows so that no flow can drift from the others.
+type PasswordPolicy = domain.PasswordPolicy
 
 // EmailValidationConfig defines email validation rules
 type EmailValidationConfig struct {
@@ -155,7 +147,8 @@ func (s *BusinessValidationServiceImpl) ValidateRegistrationRules(ctx context.Co
 	}
 
 	// Validate password complexity
-	if err := s.validatePasswordComplexityRules(password, result); err != nil {
+	// registration has never applied the e-mail similarity rule
+	if err := s.validatePasswordComplexityRules("", password, result); err != nil {
 		return nil, fmt.Errorf("password complexity validation failed: %w", err)
 	}
 
@@ -326,7 +319,7 @@ func (s *BusinessValidationServiceImpl) ValidatePasswordComplexity(ctx context.C
 		RulesApplied: 0,
 	}
 
-	if err := s.validatePasswordComplexityRules(password, result); err != nil {
+	if err := s.validatePasswordComplexityRules("", password, result); err != nil {
 		return nil, fmt.Errorf("password complexity validation failed: %w", err)
 	}
 
@@ -532,123 +525,24 @@ func (s *BusinessValidationServiceImpl) validatePhoneFormat(phone string, result
 	return nil
 }
 
-func (s *BusinessValidationServiceImpl) validatePasswordComplexityRules(password string, result *domain.ValidationResult) error {
+func (s *BusinessValidationServiceImpl) validatePasswordComplexityRules(email, password string, result *domain.ValidationResult) error {
 	result.RulesApplied++
 
-	// Length validation
-	if len(password) < s.passwordPolicy.MinLength {
+	for _, violation := range s.passwordPolicy.Check(password, email) {
 		result.IsValid = false
 		result.Passed = false
-		result.Errors = append(result.Errors, domain.ValidationError{
-			Code:      "PASSWORD_TOO_SHORT",
+		verr := domain.ValidationError{
+			Code:      violation.Code,
 			Field:     "password",
-			Message:   fmt.Sprintf("Password must be at least %d characters long", s.passwordPolicy.MinLength),
-			Severity:  domain.SeverityError,
-			Category:  domain.CategoryBusiness,
-			Expected:  s.passwordPolicy.MinLength,
-			Timestamp: time.Now(),
-		})
-	}
-
-	if len(password) > s.passwordPolicy.MaxLength {
-		result.IsValid = false
-		result.Passed = false
-		result.Errors = append(result.Errors, domain.ValidationError{
-			Code:      "PASSWORD_TOO_LONG",
-			Field:     "password",
-			Message:   fmt.Sprintf("Password must be at most %d characters long", s.passwordPolicy.MaxLength),
-			Severity:  domain.SeverityError,
-			Category:  domain.CategoryBusiness,
-			Expected:  s.passwordPolicy.MaxLength,
-			Timestamp: time.Now(),
-		})
-	}
-
-	// Character requirement validation
-	if s.passwordPolicy.RequireUppercase && !regexp.MustCompile(`[A-Z]`).MatchString(password) {
-		result.IsValid = false
-		result.Passed = false
-		result.Errors = append(result.Errors, domain.ValidationError{
-			Code:      "PASSWORD_MISSING_UPPERCASE",
-			Field:     "password",
-			Message:   "Password must contain at least one uppercase letter",
+			Message:   violation.Message,
 			Severity:  domain.SeverityError,
 			Category:  domain.CategoryBusiness,
 			Timestamp: time.Now(),
-		})
-	}
-
-	if s.passwordPolicy.RequireLowercase && !regexp.MustCompile(`[a-z]`).MatchString(password) {
-		result.IsValid = false
-		result.Passed = false
-		result.Errors = append(result.Errors, domain.ValidationError{
-			Code:      "PASSWORD_MISSING_LOWERCASE",
-			Field:     "password",
-			Message:   "Password must contain at least one lowercase letter",
-			Severity:  domain.SeverityError,
-			Category:  domain.CategoryBusiness,
-			Timestamp: time.Now(),
-		})
-	}
-
-	if s.passwordPolicy.RequireNumbers && !regexp.MustCompile(`[0-9]`).MatchString(password) {
-		result.IsValid = false
-		result.Passed = false
-		result.Errors = append(result.Errors, domain.ValidationError{
-			Code:      "PASSWORD_MISSING_NUMBER",
-			Field:     "password",
-			Message:   "Password must contain at least one number",
-			Severity:  domain.SeverityError,
-			Category:  domain.CategoryBusiness,
-			Timestamp: time.Now(),
-		})
-	}
-
-	if s.passwordPolicy.RequireSpecialChars && !regexp.MustCompile(`[^a-zA-Z0-9]`).MatchString(password) {
-		result.IsValid = false
-		result.Passed = false
-		result.Errors = append(result.Errors, domain.ValidationError{
-			Code:      "PASSWORD_MISSING_SPECIAL",
-			Field:     "password",
-			Message:   "Password must contain at least one special character",
-			Severity:  domain.SeverityError,
-			Category:  domain.CategoryBusiness,
-			Timestamp: time.Now(),
-		})
-	}
-
-	// Check for forbidden passwords
-	passwordLower := strings.ToLower(password)
-	for _, forbidden := range s.passwordPolicy.ForbiddenPasswords {
-		if passwordLower == strings.ToLower(forbidden) {
-			result.IsValid = false
-			result.Passed = false
-			result.Errors = append(result.Errors, domain.ValidationError{
-				Code:      "PASSWORD_FORBIDDEN",
-				Field:     "password",
-				Message:   "Password is too common and not allowed",
-				Severity:  domain.SeverityError,
-				Category:  domain.CategoryBusiness,
-				Timestamp: time.Now(),
-			})
-			break
 		}
-	}
-
-	// Check for repeating characters
-	if s.passwordPolicy.MaxRepeatingChars > 0 {
-		if s.hasRepeatingChars(password, s.passwordPolicy.MaxRepeatingChars) {
-			result.IsValid = false
-			result.Passed = false
-			result.Errors = append(result.Errors, domain.ValidationError{
-				Code:      "PASSWORD_REPEATING_CHARS",
-				Field:     "password",
-				Message:   fmt.Sprintf("Password cannot have more than %d repeating characters", s.passwordPolicy.MaxRepeatingChars),
-				Severity:  domain.SeverityError,
-				Category:  domain.CategoryBusiness,
-				Timestamp: time.Now(),
-			})
+		if violation.Expected > 0 {
+			verr.Expected = violation.Expected
 		}
+		result.Errors = append(result.Errors, verr)
 	}
 
 	return nil
@@ -705,25 +599,6 @@ func (s *BusinessValidationServiceImpl) validateOTPFormat(code string, result *d
 func (s *BusinessValidationServiceImpl) processBusinessConstraint(entity interface{}, constraint domain.BusinessConstraint, result *domain.ValidationResult) {
 	// TODO: Implement business constraint processing based on constraint type
 	// This would involve checking domain rules, workflow states, resource limits, etc.
-}
-
-func (s *BusinessValidationServiceImpl) hasRepeatingChars(password string, maxRepeating int) bool {
-	if len(password) <= maxRepeating {
-		return false
-	}
-
-	count := 1
-	for i := 1; i < len(password); i++ {
-		if password[i] == password[i-1] {
-			count++
-			if count > maxRepeating {
-				return true
-			}
-		} else {
-			count = 1
-		}
-	}
-	return false
 }
 
 // Compile-time interface compliance verification

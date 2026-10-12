@@ -186,6 +186,17 @@ func setupTestDatabase(dsn string) (*gorm.DB, *sql.DB, error) {
 		return nil, nil, fmt.Errorf("failed to run auto-migration: %w", err)
 	}
 
+	// The password history table is created only by internal/tests/database_setup.sql, not by
+	// AutoMigrate; the password reset flows read it, so the test schema creates it (idempotent).
+	if err := db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %q.password_history (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES %q.users(id) ON DELETE CASCADE,
+		password_hash VARCHAR(255) NOT NULL,
+		source VARCHAR(50) NOT NULL,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)`, schema, schema)).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to create password_history: %w", err)
+	}
+
 	return db, rawDB, nil
 }
 

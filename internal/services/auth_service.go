@@ -34,6 +34,16 @@ type AuthServiceImpl struct {
 
 	// phoneVerification is the single REQUIRE_PHONE_VERIFICATION switch (default: strict).
 	phoneVerification domain.PhoneVerificationPolicy
+
+	// passwordPolicy, when set, is checked before the request validator on registration and
+	// admin creation (the same policy object the password change/reset flows use).
+	passwordPolicy *domain.PasswordPolicy
+}
+
+// WithPasswordPolicy makes registration and admin creation enforce the password policy in the
+// service itself, so the rule holds even when no request validator is wired. Unset by default.
+func WithPasswordPolicy(policy domain.PasswordPolicy) AuthServiceOption {
+	return func(s *AuthServiceImpl) { s.passwordPolicy = &policy }
 }
 
 // AuthServiceOption customises an AuthServiceImpl at construction.
@@ -109,6 +119,13 @@ func (s *AuthServiceImpl) CreateUserByAdmin(ctx context.Context, creator *domain
 // creation: validation, password hashing, persistence, audit event and OTP dispatch.
 // creator is nil for public registration.
 func (s *AuthServiceImpl) createUserAccount(ctx context.Context, endpoint string, creator *domain.User, email, phone, password, role string) (*domain.User, error) {
+	if s.passwordPolicy != nil {
+		// registration has never applied the e-mail similarity rule
+		if violations := s.passwordPolicy.Check(password, ""); len(violations) > 0 {
+			return nil, &domain.RegistrationValidationError{Code: violations[0].Code, Field: "password", Message: violations[0].Message}
+		}
+	}
+
 	// Validate registration request if validator is available
 	if s.requestValidator != nil {
 		// Get client IP from context if available

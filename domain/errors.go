@@ -151,6 +151,13 @@ var (
 	ErrForgotPasswordInvalidOTP        = errors.New("invalid OTP for forgot password")
 	ErrForgotPasswordOTPExpired        = errors.New("OTP for forgot password has expired")
 	ErrForgotPasswordOTPMaxAttempts    = errors.New("maximum OTP attempts exceeded for forgot password")
+	// ErrResetCodeInvalid is the single answer of the phone password reset for every failure of the
+	// code step (unknown phone, wrong code, expired, already used, too many attempts), so it cannot
+	// be used to learn which phones are registered.
+	ErrResetCodeInvalid = errors.New("invalid or expired verification code")
+	// ErrPhoneResetNotEnabled is returned when the phone-only reset is used while
+	// PASSWORD_RESET_REQUIRE_EMAIL is true.
+	ErrPhoneResetNotEnabled = errors.New("phone password reset is not enabled")
 	ErrForgotPasswordFailed            = errors.New("forgot password operation failed")
 	ErrEmailPhoneMismatch              = errors.New("email and phone combination not found")
 )

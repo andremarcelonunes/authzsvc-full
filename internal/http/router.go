@@ -95,6 +95,8 @@ func buildRouterInternal(ah *handlers.AuthHandlers, ph *handlers.PolicyHandlers,
 		// Forgot password endpoints (public access)
 		passwordPublic.POST("/reset", pch.InitiateForgotPassword)
 		passwordPublic.PUT("/reset/:id/complete", pch.CompleteForgotPassword)
+		// Phone-only reset (PASSWORD_RESET_REQUIRE_EMAIL=false); answers 404 while the switch is true
+		passwordPublic.POST("/reset/confirm", pch.ResetPasswordByPhone)
 	}
 
 	// LGPD User Deletion endpoints (authenticated users only)
