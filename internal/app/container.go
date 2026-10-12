@@ -4,12 +4,12 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
 	"github.com/you/authzsvc/domain"
 	"github.com/you/authzsvc/internal/config"
 	"github.com/you/authzsvc/internal/infrastructure/auth"
+	"github.com/you/authzsvc/internal/infrastructure/database"
 	"github.com/you/authzsvc/internal/infrastructure/notifications"
 	"github.com/you/authzsvc/internal/infrastructure/repositories"
 	"github.com/you/authzsvc/internal/infrastructure/smsbudget"
@@ -77,13 +77,12 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 }
 
 func (c *Container) initDatabase() error {
-	db, err := gorm.Open(postgres.Open(c.Config.DSN), &gorm.Config{})
+	// Same connection settings and the same migration list as app.Run, so the two cannot drift.
+	db, err := database.Open(c.Config.DSN)
 	if err != nil {
 		return err
 	}
-
-	// Auto-migrate
-	if err := db.AutoMigrate(&repositories.DBUser{}, &domain.ComprehensiveAuditEvent{}); err != nil {
+	if err := database.AutoMigrate(db); err != nil {
 		return err
 	}
 

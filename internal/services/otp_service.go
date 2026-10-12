@@ -162,8 +162,20 @@ func (s *OTPServiceImpl) alreadySent(ctx context.Context, otpKey, phone string, 
 	return &domain.OTPRequest{Phone: phone, UserID: userID, ExpiresAt: expires, AlreadySent: true}
 }
 
-// Verify implements domain.OTPService with Redis persistence
+// Verify implements domain.OTPService with Redis persistence: it checks the code and, when right,
+// consumes it.
 func (s *OTPServiceImpl) Verify(ctx context.Context, phone, code string, userID uint) (bool, error) {
+	ok, err := s.VerifyKeep(ctx, phone, code, userID)
+	if ok && err == nil {
+		s.Consume(ctx, phone, userID)
+	}
+	return ok, err
+}
+
+// VerifyKeep is Verify without consuming a right code: attempts are counted and every error is the
+// same, but a correct code stays valid until Consume. A flow that still has work to do after the code
+// (checks, a database write) uses it so an internal failure does not burn a code that cost an SMS.
+func (s *OTPServiceImpl) VerifyKeep(ctx context.Context, phone, code string, userID uint) (bool, error) {
 	otpKey := fmt.Sprintf("otp:%s:%d", phone, userID)
 	attemptsKey := fmt.Sprintf("otp:att:%s:%d", phone, userID)
 
@@ -193,11 +205,14 @@ func (s *OTPServiceImpl) Verify(ctx context.Context, phone, code string, userID 
 	if !otpMatches(s.digester, storedCode, otpKey, code) {
 		return false, domain.ErrOTPInvalid
 	}
-
-	// Success - clean up Redis entries
-	s.redisClient.Del(ctx, otpKey, attemptsKey)
-
 	return true, nil
+}
+
+// Consume removes the code and its attempts counter.
+func (s *OTPServiceImpl) Consume(ctx context.Context, phone string, userID uint) {
+	s.redisClient.Del(ctx,
+		fmt.Sprintf("otp:%s:%d", phone, userID),
+		fmt.Sprintf("otp:att:%s:%d", phone, userID))
 }
 
 // CanResend implements domain.OTPService with Redis-based throttling
