@@ -210,6 +210,7 @@ func (s *UserDeletionService) RequestSelfDeletion(
 		return nil, false, fmt.Errorf("user not found: %w", err)
 	}
 	immediate := s.config.SelfDeletionImmediate
+	clientType := requestType // what the caller asked for, before any retention downgrade
 
 	if immediate && isSelfDeletionProtectedRole(user.Role) {
 		// Only logged: a security-category audit event would itself block the account's later
@@ -280,7 +281,6 @@ func (s *UserDeletionService) RequestSelfDeletion(
 	}
 
 	// Immediate mode always anonymises: the identifiers must be released. What the client asked for is kept in the audit row.
-	requestedType := requestType
 	if immediate {
 		requestType = domain.DeletionTypeAnonymization
 		if reason == "" {
@@ -323,7 +323,7 @@ func (s *UserDeletionService) RequestSelfDeletion(
 	// Create audit log entry
 	metadataJSON, _ := json.Marshal(map[string]interface{}{
 		"request_type":       requestType,
-		"requested_type":     requestedType,
+		"requested_type":     clientType,
 		"immediate":          immediate,
 		"retention_required": retentionRequired,
 	})

@@ -64,8 +64,7 @@ func newSelfDeletionFixture(t *testing.T, mutate func(cfg *UserDeletionConfig)) 
 	m.userRepo.FindByIDFunc = func(ctx context.Context, id uint) (*domain.User, error) { return f.user, nil }
 	m.complianceChecker.CanDeleteUserFunc = func(ctx context.Context, id uint) (bool, string, error) { return true, "", nil }
 	m.complianceChecker.GetRetentionRequirementsFunc = func(ctx context.Context, id uint) ([]domain.DataRetentionPolicy, error) {
-		// What production returns: the audit-log policy always applies.
-		return []domain.DataRetentionPolicy{{DataType: "audit_logs", RetentionPeriod: time.Hour, LegalBasis: "LGPD Article 16"}}, nil
+		return nil, nil
 	}
 	m.deletionRepo.CreateFunc = func(ctx context.Context, r *domain.DeletionRequest) error {
 		f.calls = append(f.calls, "request.create")
@@ -545,5 +544,27 @@ func TestAccountInvalidator_RemovesTheKeysTheOTPServiceWrites(t *testing.T) {
 	}
 	if !mr.Exists(identity.KeyPrefix+"8") || !mr.Exists("otp:"+selfDeletionPhone+":8") {
 		t.Error("another user's keys must stay")
+	}
+}
+
+// In production the audit-log retention policy always applies, which already turns full_delete into
+// anonymization; the audit row must still say what the client asked for.
+func TestSelfDeletion_RetentionDowngradeKeepsTheClientsRequestedType(t *testing.T) {
+	f := newSelfDeletionFixture(t, immediateConfig)
+	f.mocks.complianceChecker.GetRetentionRequirementsFunc = func(ctx context.Context, id uint) ([]domain.DataRetentionPolicy, error) {
+		return []domain.DataRetentionPolicy{{DataType: "audit_logs", RetentionPeriod: time.Hour, LegalBasis: "LGPD Article 16"}}, nil
+	}
+	req, _, err := f.request("", "", domain.DeletionTypeFullDelete)
+	if err != nil || req.RequestType != domain.DeletionTypeAnonymization || !req.RetentionRequired {
+		t.Fatalf("unexpected result: %v %+v", err, req)
+	}
+	var meta map[string]interface{}
+	for _, a := range f.audits {
+		if a.Action == "deletion_requested" {
+			_ = json.Unmarshal(a.Metadata, &meta)
+		}
+	}
+	if meta["requested_type"] != "full_delete" {
+		t.Errorf("the audit row must keep the type the client sent: %v", meta)
 	}
 }
