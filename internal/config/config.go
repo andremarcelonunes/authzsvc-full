@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/you/authzsvc/domain"
 )
 
 type OwnershipRule struct {
@@ -108,8 +110,10 @@ const DefaultIdentityBackendTimeout = 2 * time.Second
 // RegistrationFileConfig is the optional "registration" section. Both keys are optional;
 // an absent key keeps the strict default (true).
 type RegistrationFileConfig struct {
-	RequireEmail             *bool `yaml:"require_email"`
-	RequirePhoneVerification *bool `yaml:"require_phone_verification"`
+	RequireEmail             *bool  `yaml:"require_email"`
+	RequirePhoneVerification *bool  `yaml:"require_phone_verification"`
+	RateLimitPerIP           *int   `yaml:"rate_limit_per_ip"`
+	RateLimitWindow          string `yaml:"rate_limit_window"`
 }
 
 // RegistrationConfig holds the two switches that relax the sign-up / login rules for
@@ -120,7 +124,41 @@ type RegistrationConfig struct {
 	// RequirePhoneVerification: when false, unverified users may log in and registration sends
 	// no OTP (REQUIRE_PHONE_VERIFICATION).
 	RequirePhoneVerification bool
+	// RateLimitPerIP and RateLimitWindow: public registrations allowed per client IP in each
+	// window (REGISTRATION_RATE_LIMIT_PER_IP, REGISTRATION_RATE_LIMIT_WINDOW). Defaults 2 per 30s.
+	// Privileged creation (POST /admin/users) is exempt.
+	RateLimitPerIP  int
+	RateLimitWindow time.Duration
 }
+
+// PasswordFileConfig is the optional "password" section; every key is optional.
+type PasswordFileConfig struct {
+	RequireComplexity *bool `yaml:"require_complexity"`
+	MinLength         *int  `yaml:"min_length"`
+	ResetRequireEmail *bool `yaml:"reset_require_email"`
+}
+
+// PasswordConfig holds the password switches. The defaults are today's strict behaviour.
+type PasswordConfig struct {
+	// RequireComplexity: when false the composition rules are off and only the length rules
+	// apply (PASSWORD_REQUIRE_COMPLEXITY). Default true.
+	RequireComplexity bool
+	// MinLength is the minimum password length (PASSWORD_MIN_LENGTH). Default 8.
+	MinLength int
+	// ResetRequireEmail: when true (default) the public password reset needs an e-mail and a phone
+	// that belong to the same user; when false the phone alone identifies the account
+	// (PASSWORD_RESET_REQUIRE_EMAIL).
+	ResetRequireEmail bool
+}
+
+// Bounds accepted for PASSWORD_MIN_LENGTH and the registration rate limit settings.
+const (
+	MinAllowedPasswordMinLength = 4
+	MaxAllowedPasswordMinLength = domain.DefaultPasswordMaxLength
+	MaxRegistrationRateLimit    = 100000
+	MinRegistrationRateWindow   = time.Second
+	MaxRegistrationRateWindow   = time.Hour
+)
 
 type ConfigFile struct {
 	App        AppConfig        `yaml:"app"`
@@ -135,6 +173,7 @@ type ConfigFile struct {
 
 	IdentityBackend IdentityBackendFileConfig `yaml:"identity_backend"`
 	Registration    RegistrationFileConfig    `yaml:"registration"`
+	Password        PasswordFileConfig        `yaml:"password"`
 }
 
 type Config struct {
@@ -170,6 +209,9 @@ type Config struct {
 
 	// Registration switches (REQUIRE_REGISTRATION_EMAIL, REQUIRE_PHONE_VERIFICATION); environment overrides config file
 	Registration RegistrationConfig
+
+	// Password switches (PASSWORD_REQUIRE_COMPLEXITY, PASSWORD_MIN_LENGTH, PASSWORD_RESET_REQUIRE_EMAIL); environment overrides config file
+	Password PasswordConfig
 }
 
 func env(k, def string) string {
@@ -233,6 +275,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	password, err := loadPasswordConfig(configFile.Password)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		Port:             fmt.Sprintf("%d", configFile.App.Port),
 		DSN:              configFile.Database.DSN,
@@ -258,6 +305,7 @@ func Load() (*Config, error) {
 		Bootstrap:        loadBootstrapConfig(configFile.Bootstrap),
 		IdentityBackend:  identityBackend,
 		Registration:     registration,
+		Password:         password,
 	}, nil
 }
 
@@ -307,7 +355,77 @@ func loadRegistrationConfig(fromFile RegistrationFileConfig) (RegistrationConfig
 	if err != nil {
 		return RegistrationConfig{}, err
 	}
-	return RegistrationConfig{RequireEmail: requireEmail, RequirePhoneVerification: requirePhone}, nil
+	limit, window, err := resolveRegistrationRateLimit(fromFile)
+	if err != nil {
+		return RegistrationConfig{}, err
+	}
+	return RegistrationConfig{
+		RequireEmail:             requireEmail,
+		RequirePhoneVerification: requirePhone,
+		RateLimitPerIP:           limit,
+		RateLimitWindow:          window,
+	}, nil
+}
+
+// resolveRegistrationRateLimit applies REGISTRATION_RATE_LIMIT_PER_IP and
+// REGISTRATION_RATE_LIMIT_WINDOW over the optional registration section; the defaults are
+// 2 registrations per 30 seconds per IP. Out-of-range or unparsable values are errors.
+func resolveRegistrationRateLimit(fromFile RegistrationFileConfig) (int, time.Duration, error) {
+	limit := domain.DefaultRegistrationRateLimitPerIP
+	if fromFile.RateLimitPerIP != nil {
+		limit = *fromFile.RateLimitPerIP
+	}
+	if raw := os.Getenv("REGISTRATION_RATE_LIMIT_PER_IP"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid value for REGISTRATION_RATE_LIMIT_PER_IP: expected an integer")
+		}
+		limit = v
+	}
+	if limit < 1 || limit > MaxRegistrationRateLimit {
+		return 0, 0, fmt.Errorf("invalid registration rate limit per IP %d: must be between 1 and %d", limit, MaxRegistrationRateLimit)
+	}
+
+	window := domain.DefaultRegistrationRateWindow
+	if raw := env("REGISTRATION_RATE_LIMIT_WINDOW", fromFile.RateLimitWindow); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid registration rate limit window %q: expected a duration such as 30s", raw)
+		}
+		window = d
+	}
+	if window < MinRegistrationRateWindow || window > MaxRegistrationRateWindow {
+		return 0, 0, fmt.Errorf("invalid registration rate limit window %s: must be between %s and %s", window, MinRegistrationRateWindow, MaxRegistrationRateWindow)
+	}
+	return limit, window, nil
+}
+
+// loadPasswordConfig applies PASSWORD_REQUIRE_COMPLEXITY, PASSWORD_MIN_LENGTH and
+// PASSWORD_RESET_REQUIRE_EMAIL over the optional password section. Defaults: true, 8, true.
+func loadPasswordConfig(fromFile PasswordFileConfig) (PasswordConfig, error) {
+	complexity, err := resolveBoolSwitch("PASSWORD_REQUIRE_COMPLEXITY", fromFile.RequireComplexity)
+	if err != nil {
+		return PasswordConfig{}, err
+	}
+	resetEmail, err := resolveBoolSwitch("PASSWORD_RESET_REQUIRE_EMAIL", fromFile.ResetRequireEmail)
+	if err != nil {
+		return PasswordConfig{}, err
+	}
+	minLength := domain.DefaultPasswordMinLength
+	if fromFile.MinLength != nil {
+		minLength = *fromFile.MinLength
+	}
+	if raw := os.Getenv("PASSWORD_MIN_LENGTH"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			return PasswordConfig{}, fmt.Errorf("invalid value for PASSWORD_MIN_LENGTH: expected an integer")
+		}
+		minLength = v
+	}
+	if minLength < MinAllowedPasswordMinLength || minLength > MaxAllowedPasswordMinLength {
+		return PasswordConfig{}, fmt.Errorf("invalid password minimum length %d: must be between %d and %d", minLength, MinAllowedPasswordMinLength, MaxAllowedPasswordMinLength)
+	}
+	return PasswordConfig{RequireComplexity: complexity, MinLength: minLength, ResetRequireEmail: resetEmail}, nil
 }
 
 // resolveBoolSwitch returns the environment value of name when set, else the file value, else true.

@@ -26,6 +26,29 @@ type AuthHandlers struct {
 	// requirePhoneVerification is REQUIRE_PHONE_VERIFICATION (default true); it only changes
 	// the message returned by registration, the rule itself lives in the services.
 	requirePhoneVerification bool
+	// passwordPolicyEnforced is true when the auth service enforces the configured password policy
+	// (PASSWORD_MIN_LENGTH / PASSWORD_REQUIRE_COMPLEXITY). Without it the handler keeps its
+	// historical floor of 6 characters.
+	passwordPolicyEnforced bool
+}
+
+// legacyMinPasswordLength is the floor the request binding used to enforce (min=6).
+const legacyMinPasswordLength = 6
+
+// WithPasswordPolicyEnforced tells the handler that the auth service applies the configured
+// password policy, so the fixed 6-character floor must not override a lower PASSWORD_MIN_LENGTH.
+func WithPasswordPolicyEnforced(enforced bool) AuthHandlersOption {
+	return func(h *AuthHandlers) { h.passwordPolicyEnforced = enforced }
+}
+
+// rejectShortPassword answers 400 when no policy is wired and the password is under the legacy floor.
+func (h *AuthHandlers) rejectShortPassword(c *gin.Context, requestType, password string) bool {
+	if h.passwordPolicyEnforced || len(password) >= legacyMinPasswordLength {
+		return false
+	}
+	// Same text the binding tag min=6 produced, so the response is unchanged.
+	c.JSON(http.StatusBadRequest, gin.H{"error": "Key: '" + requestType + ".Password' Error:Field validation for 'Password' failed on the 'min' tag"})
+	return true
 }
 
 // AuthHandlersOption customises AuthHandlers at construction.
@@ -64,7 +87,7 @@ func NewAuthHandlers(authSvc domain.AuthService, otpSvc domain.OTPService, userR
 type RegisterRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Phone    string `json:"phone" binding:"required"`
-	Password string `json:"password" binding:"required,min=6"`
+	Password string `json:"password" binding:"required"`
 	Role     string `json:"role,omitempty"` // Optional role field, defaults to "user"
 }
 
@@ -73,7 +96,7 @@ type RegisterRequest struct {
 type registerRequestOptionalEmail struct {
 	Email    string `json:"email" binding:"omitempty,email"`
 	Phone    string `json:"phone" binding:"required"`
-	Password string `json:"password" binding:"required,min=6"`
+	Password string `json:"password" binding:"required"`
 	Role     string `json:"role,omitempty"`
 }
 
@@ -120,6 +143,10 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	req, err := h.bindRegisterRequest(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if h.rejectShortPassword(c, "RegisterRequest", req.Password) {
 		return
 	}
 
@@ -203,7 +230,7 @@ const roleCreationNotAllowedMessage = "Your role is not allowed to create accoun
 type AdminCreateUserRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Phone    string `json:"phone" binding:"required"`
-	Password string `json:"password" binding:"required,min=6"`
+	Password string `json:"password" binding:"required"`
 	Role     string `json:"role" binding:"required"`
 }
 
@@ -211,7 +238,7 @@ type AdminCreateUserRequest struct {
 type adminCreateUserRequestOptionalEmail struct {
 	Email    string `json:"email" binding:"omitempty,email"`
 	Phone    string `json:"phone" binding:"required"`
-	Password string `json:"password" binding:"required,min=6"`
+	Password string `json:"password" binding:"required"`
 	Role     string `json:"role" binding:"required"`
 }
 
@@ -231,6 +258,10 @@ func (h *AuthHandlers) AdminCreateUser(c *gin.Context) {
 	}
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if h.rejectShortPassword(c, "AdminCreateUserRequest", req.Password) {
 		return
 	}
 

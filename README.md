@@ -2948,6 +2948,15 @@ OTP_LENGTH=6                    # OTP code length
 OTP_MAX_ATTEMPTS=5              # Maximum verification attempts
 OTP_RESEND_WINDOW=60s           # Minimum time between OTP sends
 
+# Password policy and reset (defaults keep the strict behaviour; yaml section `password`)
+PASSWORD_REQUIRE_COMPLEXITY=true   # false = only length rules (shared by register, admin create, change, reset)
+PASSWORD_MIN_LENGTH=8              # 4..128
+PASSWORD_RESET_REQUIRE_EMAIL=true  # false = POST /password/reset by phone alone + POST /password/reset/confirm
+
+# Registration rate limit per client IP (yaml section `registration`)
+REGISTRATION_RATE_LIMIT_PER_IP=2   # default 2
+REGISTRATION_RATE_LIMIT_WINDOW=30s # default 30s; admin creation is exempt
+
 # Registration switches (phone-first mobile apps). Both default to true = strict behaviour.
 # yaml: registration.{require_email,require_phone_verification}; the environment wins over the file.
 REQUIRE_REGISTRATION_EMAIL=true   # false: e-mail optional at POST /auth/register and POST /admin/users

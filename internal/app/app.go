@@ -84,6 +84,9 @@ func Run(cfg *config.Config) error {
 	passwordChangeConfig.RateLimitWindow = cfg.OTP_ResendWindow
 	passwordChangeConfig.MaxRequestsPerWindow = 5
 	passwordChangeConfig.PasswordHistoryCount = 5
+	// One password policy for registration, admin creation, change and reset
+	// (PASSWORD_REQUIRE_COMPLEXITY, PASSWORD_MIN_LENGTH).
+	passwordPolicy := domain.NewPasswordPolicy(cfg.Password.MinLength, cfg.Password.RequireComplexity)
 	passwordChangeSvc := services.NewPasswordChangeService(
 		passwordChangeRepo,
 		passwordHistoryRepo,
@@ -94,6 +97,8 @@ func Run(cfg *config.Config) error {
 		sessionRepo,
 		auditSvc,
 		passwordChangeConfig,
+		services.WithPasswordChangePolicy(passwordPolicy),
+		services.WithPasswordResetRequireEmail(cfg.Password.ResetRequireEmail), // PASSWORD_RESET_REQUIRE_EMAIL
 	)
 
 	// LGPD User Deletion: Initialize deletion system
@@ -173,16 +178,7 @@ func Run(cfg *config.Config) error {
 
 	// Initialize business validation service
 	businessConfig := services.BusinessValidationConfig{
-		PasswordPolicy: services.PasswordPolicy{
-			MinLength:           8,
-			MaxLength:           128,
-			RequireUppercase:    true,
-			RequireLowercase:    true,
-			RequireNumbers:      true,
-			RequireSpecialChars: false,
-			ForbiddenPasswords:  []string{"password", "123456", "admin"},
-			MaxRepeatingChars:   3,
-		},
+		PasswordPolicy: passwordPolicy,
 		EmailValidation: services.EmailValidationConfig{
 			AllowedDomains:      []string{},
 			BlockedDomains:      []string{"tempmail.com", "10minutemail.com"},
@@ -211,6 +207,9 @@ func Run(cfg *config.Config) error {
 		CacheTimeout:      cfg.ValidationConfig.CacheTimeout,
 		MaxValidationTime: cfg.ValidationConfig.MaxValidationTime,
 		EnableMetrics:     cfg.ValidationConfig.EnableMetrics,
+		// REGISTRATION_RATE_LIMIT_PER_IP / REGISTRATION_RATE_LIMIT_WINDOW (default 2 per 30s)
+		RegistrationRateLimit:  cfg.Registration.RateLimitPerIP,
+		RegistrationRateWindow: cfg.Registration.RateLimitWindow,
 	}
 	requestValidationSvc := services.NewRequestValidationService(
 		securityValidationSvc,
@@ -229,7 +228,7 @@ func Run(cfg *config.Config) error {
 	phoneAuthStrategy := services.NewPhoneAuthStrategy(userRepo, passwordSvc, identifierResolver, services.WithStrategyPhoneVerificationPolicy(phoneVerification))
 
 	// Initialize auth service with validation support and unified authentication (CB-194)
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, requestValidationSvc, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy, services.WithPhoneVerificationPolicy(phoneVerification))
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, requestValidationSvc, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy, services.WithPhoneVerificationPolicy(phoneVerification), services.WithPasswordPolicy(passwordPolicy))
 
 	// Configure validation middleware
 	validationConfig := middleware.ValidationConfig{
@@ -242,6 +241,7 @@ func Run(cfg *config.Config) error {
 		LogValidationEvents:      cfg.ValidationConfig.LogValidationEvents,
 		EnableMetrics:            cfg.ValidationConfig.EnableMetrics,
 		ShadowMode:               cfg.ValidationConfig.ShadowMode, // CB-182: Shadow mode configuration
+		RegistrationRequestsPerMinute: domain.RegistrationRequestsPerMinute(cfg.Registration.RateLimitPerIP, cfg.Registration.RateLimitWindow),
 	}
 
 	var validationMW *middleware.ValidationMiddleware
@@ -281,6 +281,7 @@ func Run(cfg *config.Config) error {
 	authH := handlers.NewAuthHandlers(authSvc, otpSvc, userRepo, tokenSvc, sessionRepo,
 		handlers.WithRequireRegistrationEmail(cfg.Registration.RequireEmail),
 		handlers.WithRequirePhoneVerification(cfg.Registration.RequirePhoneVerification),
+		handlers.WithPasswordPolicyEnforced(true),
 	)
 	polH := &handlers.PolicyHandlers{E: cas.E}
 	// Backend id translation for token.backend_user_id; nil (untyped) when not configured.
