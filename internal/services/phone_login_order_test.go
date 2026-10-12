@@ -22,7 +22,7 @@ func TestPhoneLogin_WrongPasswordOnUnverifiedAccountIsInvalidCredentials(t *test
 	}
 	_, err := s.Authenticate(context.Background(), "+15551234567", "right")
 	var failure *domain.AuthFailureError
-	if !errors.Is(err, domain.ErrPhoneNotVerified) || !errors.As(err, &failure) || failure.UserID != 7 {
+	if !errors.Is(err, domain.ErrPhoneNotVerified) || !errors.As(err, &failure) || failure.UserID != 7 || failure.Phone != "+15551234567" {
 		t.Errorf("right password: expected ErrPhoneNotVerified carrying user 7, got %v", err)
 	}
 }

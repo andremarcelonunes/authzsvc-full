@@ -62,14 +62,15 @@ func (s *PhoneAuthStrategy) Authenticate(ctx context.Context, identifier, passwo
 		return nil, &domain.AuthFailureError{UserID: user.ID, Err: domain.ErrUserInactive}
 	}
 
-	// Check if phone is verified (enhanced security requirement for phone-based auth)
-	if s.phoneVerification.ShouldEnforceVerification(user) {
-		return nil, &domain.AuthFailureError{UserID: user.ID, Err: domain.ErrPhoneNotVerified}
-	}
-
-	// Verify password
+	// Verify password first: whether a phone is registered but unverified is revealed only to
+	// someone who knows the password (and then with what the verification calls need).
 	if !s.passwordService.Verify(user.PasswordHash, password) {
 		return nil, &domain.AuthFailureError{UserID: user.ID, Err: domain.ErrInvalidCredentials}
+	}
+
+	// Check if phone is verified (enhanced security requirement for phone-based auth)
+	if s.phoneVerification.ShouldEnforceVerification(user) {
+		return nil, &domain.AuthFailureError{UserID: user.ID, Err: domain.ErrPhoneNotVerified, Phone: user.Phone}
 	}
 
 	return user, nil

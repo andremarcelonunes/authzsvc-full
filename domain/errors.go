@@ -26,6 +26,9 @@ var (
 type AuthFailureError struct {
 	UserID uint
 	Err    error
+	// Phone is set only for ErrPhoneNotVerified, which is reported after the password was verified:
+	// the client needs it, with UserID, to call /auth/otp/send and /auth/otp/verify.
+	Phone string
 }
 
 func (e *AuthFailureError) Error() string { return e.Err.Error() }

@@ -69,7 +69,7 @@ func (s *EmailAuthStrategy) Authenticate(ctx context.Context, identifier, passwo
 
 	// Check if phone is verified (required for all users)
 	if s.phoneVerification.ShouldEnforceVerification(user) {
-		return nil, &domain.AuthFailureError{UserID: user.ID, Err: domain.ErrPhoneNotVerified}
+		return nil, &domain.AuthFailureError{UserID: user.ID, Err: domain.ErrPhoneNotVerified, Phone: user.Phone}
 	}
 
 	return user, nil

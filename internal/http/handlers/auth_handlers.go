@@ -354,9 +354,17 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 				"error": "Account is inactive",
 			})
 		case errors.Is(err, domain.ErrPhoneNotVerified):
-			c.JSON(http.StatusForbidden, gin.H{
+			body := gin.H{
 				"error": "Phone number not verified. Please verify your phone number to login with phone.",
-			})
+				"code":  "phone_not_verified",
+			}
+			// Only after the password was verified: what /auth/otp/send and /auth/otp/verify need.
+			var failure *domain.AuthFailureError
+			if errors.As(err, &failure) && failure.UserID != 0 {
+				body["user_id"] = failure.UserID
+				body["phone"] = failure.Phone
+			}
+			c.JSON(http.StatusForbidden, body)
 		case errors.Is(err, domain.ErrInvalidIdentifier):
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "Invalid identifier format. Please provide a valid email address or phone number.",
