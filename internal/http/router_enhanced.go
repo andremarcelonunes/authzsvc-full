@@ -67,6 +67,7 @@ func BuildEnhancedRouter(
 	deps MiddlewareDependencies,
 ) *gin.Engine {
 	r := gin.New()
+	ApplyClientIPPolicy(r, "") // strict default: the TCP peer
 	r.Use(gin.Recovery())
 	
 	// Global security headers middleware (always enabled)

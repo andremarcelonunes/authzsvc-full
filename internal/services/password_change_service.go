@@ -50,6 +50,27 @@ func WithPasswordChangeOTPDigester(d *OTPDigester) PasswordChangeOption {
 	return func(s *PasswordChangeService) { s.otpDigester = d }
 }
 
+// otpViaService marks a request row whose code was already sent (a valid code was out, so no new SMS
+// went out): the typed code is then verified by the OTP service instead of against the row.
+const otpViaService = "via-otp-service"
+
+// codeAccepted checks the typed code against a request row. phone/userID identify the OTP service entry.
+func (s *PasswordChangeService) codeAccepted(ctx context.Context, requestID, stored, provided, phone string, userID uint) bool {
+	if stored == otpViaService {
+		ok, err := s.otpService.Verify(ctx, phone, provided, userID)
+		return err == nil && ok
+	}
+	return s.otpMatches(requestID, stored, provided)
+}
+
+// sealRequestCode is sealOTP, except that the already-sent marker is kept as is.
+func (s *PasswordChangeService) sealRequestCode(requestID, code string) string {
+	if code == otpViaService {
+		return code
+	}
+	return s.sealOTP(requestID, code)
+}
+
 // sealOTP is the form of a code that goes into a request row.
 func (s *PasswordChangeService) sealOTP(requestID, code string) string {
 	if s.otpDigester == nil {
@@ -221,13 +242,13 @@ func (s *PasswordChangeService) InitiatePasswordChange(ctx context.Context, user
 	request.OTPCode = newPasswordHash // Temporarily store here
 
 	// Generate and send OTP
-	otpCode, err := s.generateAndSendOTP(ctx, user.Phone, user.ID)
+	otpCode, err := s.generateAndSendOTPFor(ctx, domain.OTPPurposePasswordChange, ipAddress, user.Phone, user.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send OTP: %w", err)
 	}
 
 	// Replace temporary password hash with the code's digest
-	request.OTPCode = s.sealOTP(requestID, otpCode)
+	request.OTPCode = s.sealRequestCode(requestID, otpCode)
 	otpExpiresAt := time.Now().Add(s.config.OTPTTL)
 	request.OTPGeneratedAt = &time.Time{}
 	*request.OTPGeneratedAt = time.Now()
@@ -304,7 +325,13 @@ func (s *PasswordChangeService) CompletePasswordChange(ctx context.Context, user
 	// For password change requests, OTP expiration is same as request expiration
 	// No separate OTP expiration check needed since IsExpired() already validated above
 
-	if !s.otpMatches(requestID, request.OTPCode, otpCode) {
+	phone := ""
+	if request.OTPCode == otpViaService {
+		if user, uerr := s.userRepo.FindByID(ctx, userID); uerr == nil && user != nil {
+			phone = user.Phone
+		}
+	}
+	if !s.codeAccepted(ctx, requestID, request.OTPCode, otpCode, phone, userID) {
 		// Increment OTP attempts
 		request.OTPAttempts++
 		s.passwordChangeRepo.UpdateOTPAttempts(ctx, requestID, request.OTPAttempts)
@@ -406,7 +433,7 @@ func (s *PasswordChangeService) InitiateForgotPasswordByPhone(ctx context.Contex
 	user := s.findResettableUserByPhone(ctx, phone, email)
 
 	if user != nil {
-		_, _ = s.otpService.Generate(ctx, user.Phone, user.ID)
+		_, _ = s.otpService.Generate(domain.WithOTPPurpose(ctx, domain.OTPPurposePasswordReset), user.Phone, user.ID)
 	}
 
 	return &domain.PhoneResetResponse{Status: "initiated", Message: phoneResetInitiatedMessage}, nil
@@ -507,10 +534,10 @@ func (s *PasswordChangeService) InitiateForgotPassword(ctx context.Context, emai
 
 	// Only send OTP if user exists (but always return success message for security)
 	if userID != nil {
-		otpCode, err := s.generateAndSendOTP(ctx, phone, *userID)
+		otpCode, err := s.generateAndSendOTPFor(ctx, domain.OTPPurposePasswordReset, ipAddress, phone, *userID)
 		if err == nil {
 			otpExpiresAt := time.Now().Add(s.config.OTPTTL)
-			request.OTPCode = s.sealOTP(requestID, otpCode)
+			request.OTPCode = s.sealRequestCode(requestID, otpCode)
 			request.OTPGeneratedAt = &time.Time{}
 			*request.OTPGeneratedAt = time.Now()
 			request.OTPExpiresAt = &otpExpiresAt
@@ -569,7 +596,7 @@ func (s *PasswordChangeService) CompleteForgotPassword(ctx context.Context, requ
 	// For forgot password requests, OTP expiration is same as request expiration
 	// No separate OTP expiration check needed since IsExpired() already validated above
 
-	if request.UserID == nil || request.OTPCode == "" || !s.otpMatches(requestID, request.OTPCode, otpCode) {
+	if request.UserID == nil || request.OTPCode == "" || !s.codeAccepted(ctx, requestID, request.OTPCode, otpCode, request.Phone, *request.UserID) {
 		// Increment OTP attempts
 		request.OTPAttempts++
 		s.forgotPasswordRepo.UpdateOTPAttempts(ctx, requestID, request.OTPAttempts)
@@ -825,9 +852,18 @@ func (s *PasswordChangeService) generateRandomString(length int) string {
 }
 
 func (s *PasswordChangeService) generateAndSendOTP(ctx context.Context, phone string, userID uint) (string, error) {
+	return s.generateAndSendOTPFor(ctx, domain.OTPPurposePasswordChange, "", phone, userID)
+}
+
+// generateAndSendOTPFor asks the OTP service for a code for purpose, on behalf of the caller at ipAddress.
+func (s *PasswordChangeService) generateAndSendOTPFor(ctx context.Context, purpose domain.OTPPurpose, ipAddress, phone string, userID uint) (string, error) {
+	ctx = domain.WithClientIP(domain.WithOTPPurpose(ctx, purpose), ipAddress)
 	otpRequest, err := s.otpService.Generate(ctx, phone, userID)
 	if err != nil {
 		return "", err
+	}
+	if otpRequest.AlreadySent {
+		return otpViaService, nil
 	}
 	return otpRequest.Code, nil
 }

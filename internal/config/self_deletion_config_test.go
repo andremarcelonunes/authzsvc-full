@@ -3,6 +3,8 @@ package config
 import (
 	"testing"
 	"time"
+
+	"github.com/you/authzsvc/domain"
 )
 
 func TestLoadSelfDeletionConfig_DefaultsKeepTodaysBehaviour(t *testing.T) {
@@ -85,5 +87,83 @@ func TestOTPLogCodesSwitchDefaultsToFalse(t *testing.T) {
 	t.Setenv("OTP_LOG_CODES", "true")
 	if v, _ := resolveBoolSwitchDefaultFalse("OTP_LOG_CODES", nil); !v {
 		t.Error("OTP_LOG_CODES=true must switch it on")
+	}
+}
+
+func TestLoadSMSBudgetConfig(t *testing.T) {
+	got, err := loadSMSBudgetConfig(SMSBudgetFileConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := domain.SMSLimits{MaxPerPhonePerDay: 2, MaxPerPhonePer30Days: 5, MinIntervalPerPhone: 2 * time.Minute, MaxPerIPPerDay: 5, GlobalDailyCap: 100, GlobalMonthlyCap: 1000}
+	if got != want {
+		t.Errorf("defaults must be the strict ones: %+v", got)
+	}
+
+	one, ten := 1, 10
+	got, err = loadSMSBudgetConfig(SMSBudgetFileConfig{MaxPerPhonePerDay: &ten, GlobalDailyCap: &one, MinIntervalPerPhone: "30s"})
+	if err != nil || got.MaxPerPhonePerDay != 10 || got.GlobalDailyCap != 1 || got.MinIntervalPerPhone != 30*time.Second || got.GlobalMonthlyCap != 1000 {
+		t.Errorf("file values must apply over the defaults: %+v %v", got, err)
+	}
+
+	t.Setenv("SMS_MAX_PER_PHONE_PER_DAY", "3")
+	t.Setenv("SMS_MAX_PER_PHONE_PER_30_DAYS", "7")
+	t.Setenv("SMS_MIN_INTERVAL_PER_PHONE", "0")
+	t.Setenv("SMS_MAX_PER_IP_PER_DAY", "9")
+	t.Setenv("SMS_GLOBAL_DAILY_CAP", "11")
+	t.Setenv("SMS_GLOBAL_MONTHLY_CAP", "12")
+	got, err = loadSMSBudgetConfig(SMSBudgetFileConfig{MaxPerPhonePerDay: &ten})
+	want = domain.SMSLimits{MaxPerPhonePerDay: 3, MaxPerPhonePer30Days: 7, MinIntervalPerPhone: 0, MaxPerIPPerDay: 9, GlobalDailyCap: 11, GlobalMonthlyCap: 12}
+	if err != nil || got != want {
+		t.Errorf("env must override file: %+v %v", got, err)
+	}
+}
+
+func TestLoadSMSBudgetConfig_Invalid(t *testing.T) {
+	for env, value := range map[string]string{
+		"SMS_MAX_PER_PHONE_PER_DAY":  "0",
+		"SMS_GLOBAL_DAILY_CAP":       "-1",
+		"SMS_GLOBAL_MONTHLY_CAP":     "many",
+		"SMS_MIN_INTERVAL_PER_PHONE": "soon",
+	} {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv(env, value)
+			if _, err := loadSMSBudgetConfig(SMSBudgetFileConfig{}); err == nil {
+				t.Errorf("%s=%s must be rejected (a zero cap would silently disable SMS)", env, value)
+			}
+		})
+	}
+	if _, err := loadSMSBudgetConfig(SMSBudgetFileConfig{MinIntervalPerPhone: "-1m"}); err == nil {
+		t.Error("a negative interval must be rejected")
+	}
+}
+
+func TestLoadClientIPHeader(t *testing.T) {
+	if h, err := loadClientIPHeader(""); err != nil || h != "" {
+		t.Errorf("the default trusts no header: %q %v", h, err)
+	}
+	if h, err := loadClientIPHeader(" X-Envoy-External-Address "); err != nil || h != "X-Envoy-External-Address" {
+		t.Errorf("file value: %q %v", h, err)
+	}
+	t.Setenv("CLIENT_IP_HEADER", "X-Real-Peer")
+	if h, _ := loadClientIPHeader("X-Envoy-External-Address"); h != "X-Real-Peer" {
+		t.Errorf("env must override file, got %q", h)
+	}
+	t.Setenv("CLIENT_IP_HEADER", "X-Bad Header: 1")
+	if _, err := loadClientIPHeader(""); err == nil {
+		t.Error("a value that is not a header name must be rejected")
+	}
+}
+
+func TestValidateSMSBrand(t *testing.T) {
+	for _, ok := range []string{domain.DefaultSMSBrand, "A", "WWWWWWWWWWW", "Café"} {
+		if err := domain.ValidateSMSBrand(ok); err != nil {
+			t.Errorf("%q must be valid: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "   ", "WWWWWWWWWWWW" /* 12 */, "Tocomvê", "São Paulo", "a\nb", "日本"} {
+		if err := domain.ValidateSMSBrand(bad); err == nil {
+			t.Errorf("%q must be rejected", bad)
+		}
 	}
 }
