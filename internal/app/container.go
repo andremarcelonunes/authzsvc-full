@@ -78,7 +78,7 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 
 func (c *Container) initDatabase() error {
 	// Same connection settings and the same migration list as app.Run, so the two cannot drift.
-	db, err := database.Open(c.Config.DSN)
+	db, err := database.OpenWithSQLLogging(c.Config.DSN, c.Config.DBLogSQL)
 	if err != nil {
 		return err
 	}

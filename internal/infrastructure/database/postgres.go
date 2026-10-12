@@ -2,6 +2,10 @@ package database
 
 import (
 	"fmt"
+	"io"
+	"log"
+	"os"
+	"time"
 
 	"github.com/casbin/gorm-adapter/v3"
 	"github.com/you/authzsvc/domain"
@@ -13,9 +17,31 @@ import (
 )
 
 // Open creates a new database connection with production-ready settings
-func Open(dsn string) (*gorm.DB, error) {
+func Open(dsn string) (*gorm.DB, error) { return OpenWithSQLLogging(dsn, false) }
+
+// sqlLogger logs warnings and errors only (info: every statement, when logSQL). Statements are
+// printed with placeholders, never with values, so phone numbers, e-mails and password hashes cannot
+// reach the log; "record not found" is not logged at all.
+func sqlLogger(logSQL bool) logger.Interface { return newSQLLogger(os.Stdout, logSQL) }
+
+func newSQLLogger(out io.Writer, logSQL bool) logger.Interface {
+	level := logger.Warn
+	if logSQL {
+		level = logger.Info
+	}
+	return logger.New(log.New(out, "\r\n", log.LstdFlags), logger.Config{
+		SlowThreshold:             500 * time.Millisecond,
+		LogLevel:                  level,
+		IgnoreRecordNotFoundError: true,
+		ParameterizedQueries:      true,
+		Colorful:                  false,
+	})
+}
+
+// OpenWithSQLLogging is Open with the SQL statement log switched by logSQL (DB_LOG_SQL).
+func OpenWithSQLLogging(dsn string, logSQL bool) (*gorm.DB, error) {
 	config := &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		Logger: sqlLogger(logSQL),
 		NamingStrategy: schema.NamingStrategy{
 			TablePrefix: "auth.",
 		},
