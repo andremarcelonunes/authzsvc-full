@@ -39,6 +39,15 @@ type AuthServiceImpl struct {
 	// passwordPolicy, when set, is checked before the request validator on registration and
 	// admin creation (the same policy object the password change/reset flows use).
 	passwordPolicy *domain.PasswordPolicy
+
+	// sessionPolicy: session lifetime, optional absolute cap and refresh grace window.
+	// The zero value is the legacy behaviour (7 days at login, 24 hours per refresh, strict one-time tokens).
+	sessionPolicy domain.SessionPolicy
+}
+
+// WithSessionPolicy sets the session lifetime configuration (SESSION_TTL, SESSION_MAX_AGE, REFRESH_GRACE).
+func WithSessionPolicy(policy domain.SessionPolicy) AuthServiceOption {
+	return func(s *AuthServiceImpl) { s.sessionPolicy = policy }
 }
 
 // WithPasswordPolicy makes registration and admin creation enforce the password policy in the
@@ -330,7 +339,7 @@ func (s *AuthServiceImpl) Login(ctx context.Context, email, password string) (*d
 	session := &domain.Session{
 		ID:        fmt.Sprintf("sess_%d_%d", user.ID, time.Now().UnixNano()),
 		UserID:    user.ID,
-		ExpiresAt: time.Now().Add(7 * 24 * time.Hour), // 7 days
+		ExpiresAt: time.Now().Add(s.sessionPolicy.LoginTTL()),
 		CreatedAt: time.Now(),
 	}
 
@@ -440,7 +449,7 @@ func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.
 	session := &domain.Session{
 		ID:        fmt.Sprintf("sess_%d_%d", user.ID, time.Now().UnixNano()),
 		UserID:    user.ID,
-		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+		ExpiresAt: time.Now().Add(s.sessionPolicy.LoginTTL()),
 		CreatedAt: time.Now(),
 	}
 	
@@ -500,7 +509,16 @@ func (s *AuthServiceImpl) AuthenticateUser(ctx context.Context, request *domain.
 	}, nil
 }
 
-// RefreshToken implements domain.AuthService
+// unavailable marks err as retryable (domain.ErrTemporarilyUnavailable) while keeping it in the chain
+func unavailable(err error) error {
+	return fmt.Errorf("%w: %w", domain.ErrTemporarilyUnavailable, err)
+}
+
+// RefreshToken implements domain.AuthService.
+//
+// Failure classes (the HTTP layer maps them): a bad, used or foreign token, a missing/expired session or
+// an inactive user is final (401); a refresh already running for the session (ErrConcurrentRefresh)
+// and any dependency failure (domain.ErrTemporarilyUnavailable) are retryable (409 / 503).
 func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string) (*domain.AuthResult, error) {
 	// Validate refresh token with enhanced security logging
 	claims, err := s.tokenSvc.ValidateRefreshToken(refreshToken)
@@ -512,10 +530,20 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 	// CB-179: Check if refresh token is blacklisted (already used)
 	isBlacklisted, err := s.isRefreshTokenBlacklisted(ctx, refreshToken)
 	if err != nil {
-		return nil, fmt.Errorf("blacklist check failed for session %s: %w", claims.SessionID, err)
+		return nil, fmt.Errorf("blacklist check failed for session %s: %w", claims.SessionID, unavailable(err))
 	}
+	// A used token is accepted once more only inside the grace window and only for the session that
+	// rotated it (the token is consumed below, once the session and user are validated).
+	graceUsed := false
 	if isBlacklisted {
-		return nil, fmt.Errorf("refresh token already used (blacklisted) for session %s: %w", claims.SessionID, domain.ErrTokenInvalid)
+		granted, graceErr := s.refreshGraceGranted(ctx, refreshToken, claims.SessionID)
+		if graceErr != nil {
+			return nil, fmt.Errorf("refresh grace check failed for session %s: %w", claims.SessionID, unavailable(graceErr))
+		}
+		if !granted {
+			return nil, fmt.Errorf("refresh token already used (blacklisted) for session %s: %w", claims.SessionID, domain.ErrTokenInvalid)
+		}
+		graceUsed = true
 	}
 
 	// Implement distributed lock to prevent concurrent refresh operations (if Redis available)
@@ -523,16 +551,16 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 	if s.redisClient != nil {
 		lockKey := fmt.Sprintf("refresh_lock:%s", claims.SessionID)
 		lockTTL := 30 * time.Second
-		
+
 		// Try to acquire lock with enhanced error context
 		acquired, err := s.acquireLock(ctx, lockKey, lockTTL)
 		if err != nil {
-			return nil, fmt.Errorf("distributed lock acquisition failed for session %s: %w", claims.SessionID, err)
+			return nil, fmt.Errorf("distributed lock acquisition failed for session %s: %w", claims.SessionID, unavailable(err))
 		}
 		if !acquired {
 			return nil, fmt.Errorf("concurrent refresh attempt detected for session %s: %w", claims.SessionID, domain.ErrConcurrentRefresh)
 		}
-		
+
 		// Ensure lock is released
 		defer func() {
 			if releaseErr := s.releaseLock(ctx, lockKey); releaseErr != nil {
@@ -544,18 +572,29 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 	// Check session exists with detailed error context
 	session, err := s.sessionRepo.FindByID(ctx, claims.SessionID)
 	if err != nil {
-		return nil, fmt.Errorf("session lookup failed for session %s: %w", claims.SessionID, domain.ErrSessionNotFound)
+		if errors.Is(err, domain.ErrSessionNotFound) || errors.Is(err, domain.ErrSessionExpired) {
+			return nil, fmt.Errorf("session lookup failed for session %s: %w", claims.SessionID, domain.ErrSessionNotFound)
+		}
+		return nil, fmt.Errorf("session lookup failed for session %s: %w", claims.SessionID, unavailable(err))
 	}
 
 	// Check session not expired with timestamp context
-	if session.ExpiresAt.Before(time.Now()) {
+	now := time.Now()
+	if session.ExpiresAt.Before(now) {
 		return nil, fmt.Errorf("session %s expired at %v: %w", claims.SessionID, session.ExpiresAt, domain.ErrSessionExpired)
+	}
+	// Optional absolute cap since login (SESSION_MAX_AGE)
+	if s.sessionPolicy.Expired(session.CreatedAt, now) {
+		return nil, fmt.Errorf("session %s reached its maximum age: %w", claims.SessionID, domain.ErrSessionExpired)
 	}
 
 	// Get user with enhanced validation
 	user, err := s.userRepo.FindByID(ctx, claims.UserID)
 	if err != nil {
-		return nil, fmt.Errorf("user lookup failed for user ID %d in session %s: %w", claims.UserID, claims.SessionID, domain.ErrUserNotFound)
+		if errors.Is(err, domain.ErrUserNotFound) {
+			return nil, fmt.Errorf("user lookup failed for user ID %d in session %s: %w", claims.UserID, claims.SessionID, domain.ErrUserNotFound)
+		}
+		return nil, fmt.Errorf("user lookup failed for user ID %d in session %s: %w", claims.UserID, claims.SessionID, unavailable(err))
 	}
 
 	// Check if user is still active with security context
@@ -563,14 +602,28 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 		return nil, fmt.Errorf("inactive user %d attempted token refresh: %w", user.ID, domain.ErrUserInactive)
 	}
 
-	// Extend session TTL (24 hours from now) with audit trail
-	newSessionTTL := 24 * time.Hour
+	// Spend the grace: one more use of the just-rotated token, under the lock. Whoever spends it first wins.
+	if graceUsed {
+		spent, spendErr := s.spendRefreshGrace(ctx, refreshToken)
+		if spendErr != nil {
+			return nil, fmt.Errorf("refresh grace could not be spent for session %s: %w", session.ID, unavailable(spendErr))
+		}
+		if !spent {
+			return nil, fmt.Errorf("refresh token already used (blacklisted) for session %s: %w", session.ID, domain.ErrTokenInvalid)
+		}
+	}
+
+	// Slide the session lifetime (SESSION_TTL; legacy 24 hours) without passing the optional absolute cap
+	newSessionTTL := s.sessionPolicy.CappedTTL(session.CreatedAt, now, s.sessionPolicy.RefreshTTL())
 	if err := s.sessionRepo.ExtendTTL(ctx, session.ID, newSessionTTL); err != nil {
-		return nil, fmt.Errorf("session TTL extension failed for session %s (user %d): %w", session.ID, user.ID, err)
+		if errors.Is(err, domain.ErrSessionNotFound) {
+			return nil, fmt.Errorf("session TTL extension failed for session %s (user %d): %w", session.ID, user.ID, domain.ErrSessionNotFound)
+		}
+		return nil, fmt.Errorf("session TTL extension failed for session %s (user %d): %w", session.ID, user.ID, unavailable(err))
 	}
 
 	// Create new session object to avoid race condition on shared session data
-	newExpiryTime := time.Now().Add(newSessionTTL)
+	newExpiryTime := now.Add(newSessionTTL)
 	updatedSession := &domain.Session{
 		ID:        session.ID,
 		UserID:    session.UserID,
@@ -578,13 +631,21 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 		CreatedAt: session.CreatedAt,
 	}
 	if err := s.sessionRepo.Update(ctx, updatedSession); err != nil {
-		return nil, fmt.Errorf("session update failed for session %s (user %d): %w", session.ID, user.ID, err)
+		if errors.Is(err, domain.ErrSessionNotFound) {
+			return nil, fmt.Errorf("session update failed for session %s (user %d): %w", session.ID, user.ID, domain.ErrSessionNotFound)
+		}
+		return nil, fmt.Errorf("session update failed for session %s (user %d): %w", session.ID, user.ID, unavailable(err))
 	}
 
 	// CB-179: Blacklist the current refresh token immediately after successful validation
-	// This ensures the token can only be used once (one-time use security)
-	if err := s.blacklistRefreshToken(ctx, refreshToken, claims.ExpiresAt); err != nil {
-		return nil, fmt.Errorf("failed to blacklist refresh token for session %s (user %d): %w", session.ID, user.ID, err)
+	// This ensures the token can only be used once (one-time use security). A token used through the
+	// grace window is already blacklisted.
+	if !graceUsed {
+		if err := s.blacklistRefreshToken(ctx, refreshToken, claims.ExpiresAt); err != nil {
+			return nil, fmt.Errorf("failed to blacklist refresh token for session %s (user %d): %w", session.ID, user.ID, unavailable(err))
+		}
+		// Best effort: remember the rotation so a lost response can be retried inside the grace window
+		s.rememberRotation(ctx, refreshToken, session.ID)
 	}
 
 	// Generate new access token with enhanced error context
@@ -606,6 +667,45 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 		SessionID:    session.ID,
 		ExpiresIn:    15 * 60, // 15 minutes
 	}, nil
+}
+
+// refreshGraceKey is where the rotation of a refresh token is remembered (hash only, never the token)
+func refreshGraceKey(token string) string {
+	return fmt.Sprintf("refresh_grace:%x", sha256.Sum256([]byte(token)))
+}
+
+// rememberRotation records, for the grace window, that token was just rotated within sessionID.
+// Best effort: without it the token is simply refused (strict), which is the safe direction.
+func (s *AuthServiceImpl) rememberRotation(ctx context.Context, token, sessionID string) {
+	if s.sessionPolicy.RefreshGrace <= 0 || s.redisClient == nil {
+		return
+	}
+	_ = s.redisClient.Set(ctx, refreshGraceKey(token), sessionID, s.sessionPolicy.RefreshGrace).Err()
+}
+
+// refreshGraceGranted reports whether a blacklisted token may still be used because it was rotated
+// within the grace window by the very session it claims.
+func (s *AuthServiceImpl) refreshGraceGranted(ctx context.Context, token, sessionID string) (bool, error) {
+	if s.sessionPolicy.RefreshGrace <= 0 || s.redisClient == nil {
+		return false, nil
+	}
+	owner, err := s.redisClient.Get(ctx, refreshGraceKey(token)).Result()
+	if err == redis.Nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return owner == sessionID, nil
+}
+
+// spendRefreshGrace consumes the grace of token; true only for the caller that actually removed it
+func (s *AuthServiceImpl) spendRefreshGrace(ctx context.Context, token string) (bool, error) {
+	removed, err := s.redisClient.Del(ctx, refreshGraceKey(token)).Result()
+	if err != nil {
+		return false, err
+	}
+	return removed > 0, nil
 }
 
 // Logout implements domain.AuthService

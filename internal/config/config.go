@@ -48,6 +48,13 @@ type JWTConfig struct {
 	RefreshTTL string `yaml:"refresh_ttl"`
 }
 
+// SessionFileConfig is the optional "session" section (all keys optional; absent = today's behaviour).
+type SessionFileConfig struct {
+	TTL          string `yaml:"ttl"`           // SESSION_TTL: sliding session lifetime (login and every refresh)
+	MaxAge       string `yaml:"max_age"`       // SESSION_MAX_AGE: absolute cap since login
+	RefreshGrace string `yaml:"refresh_grace"` // REFRESH_GRACE: window to re-present the just-rotated refresh token
+}
+
 type OTPConfig struct {
 	TTL          string `yaml:"ttl"`
 	Length       int    `yaml:"length"`
@@ -219,6 +226,7 @@ type ConfigFile struct {
 	Registration    RegistrationFileConfig    `yaml:"registration"`
 	Password        PasswordFileConfig        `yaml:"password"`
 	SelfDeletion    SelfDeletionFileConfig    `yaml:"self_deletion"`
+	Session         SessionFileConfig         `yaml:"session"`
 	SMSBudget       SMSBudgetFileConfig       `yaml:"sms_budget"`
 }
 
@@ -261,6 +269,9 @@ type Config struct {
 
 	// Self-deletion switches (SELF_DELETION_IMMEDIATE, SELF_DELETION_MIN_ACCOUNT_AGE, SELF_DELETION_REQUIRE_PASSWORD); environment overrides config file
 	SelfDeletion SelfDeletionConfig
+
+	// Session: sliding lifetime, optional absolute cap and refresh grace window (see domain.SessionPolicy).
+	Session domain.SessionPolicy
 
 	// OTPLogCodes (OTP_LOG_CODES, default false): let the mock SMS path (no provider configured) log the code. Never in production.
 	OTPLogCodes bool
@@ -312,6 +323,14 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWT refresh TTL: %w", err)
 	}
+
+	session, err := loadSessionConfig(configFile.Session)
+	if err != nil {
+		return nil, err
+	}
+	// The refresh JWT must not expire before the session it belongs to (it also sets the Redis
+	// lifetime of a session key), so a longer session lifetime raises the refresh lifetime to match.
+	refTTL = effectiveRefreshTTL(refTTL, session)
 
 	otpTTL, err := time.ParseDuration(configFile.OTP.TTL)
 	if err != nil {
@@ -407,6 +426,7 @@ func Load() (*Config, error) {
 		JWTIssuer:        configFile.JWT.Issuer,
 		AccessTTL:        accTTL,
 		RefreshTTL:       refTTL,
+		Session:          session,
 		OTP_TTL:          otpTTL,
 		OTP_Length:       configFile.OTP.Length,
 		OTP_MaxAttempts:  configFile.OTP.MaxAttempts,
@@ -780,4 +800,48 @@ func setupValidationConfig(configFromFile ValidationConfig) ValidationConfig {
 	config.EnableValidationCaching = true
 	
 	return config
+}
+// MaxRefreshGrace bounds REFRESH_GRACE: it is a retry window, not a second lifetime.
+const MaxRefreshGrace = 5 * time.Minute
+
+// loadSessionConfig applies SESSION_TTL, SESSION_MAX_AGE and REFRESH_GRACE over the optional session
+// section. Every value defaults to 0 (today's behaviour: 7 days at login, 24 hours per refresh, no
+// cap, strict one-time refresh tokens). Negative or unparsable values are errors.
+func loadSessionConfig(fromFile SessionFileConfig) (domain.SessionPolicy, error) {
+	var policy domain.SessionPolicy
+	for _, in := range []struct {
+		env, file string
+		dst       *time.Duration
+	}{
+		{"SESSION_TTL", fromFile.TTL, &policy.TTL},
+		{"SESSION_MAX_AGE", fromFile.MaxAge, &policy.MaxAge},
+		{"REFRESH_GRACE", fromFile.RefreshGrace, &policy.RefreshGrace},
+	} {
+		raw := env(in.env, in.file)
+		if raw == "" {
+			continue
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < 0 {
+			return policy, fmt.Errorf("invalid %s %q: expected a non-negative duration such as 720h", in.env, raw)
+		}
+		*in.dst = d
+	}
+	if policy.RefreshGrace > MaxRefreshGrace {
+		return policy, fmt.Errorf("invalid REFRESH_GRACE %s: must be at most %s", policy.RefreshGrace, MaxRefreshGrace)
+	}
+	if policy.MaxAge > 0 && policy.TTL > policy.MaxAge {
+		// the cap wins; a sliding window longer than the cap is meaningless but harmless
+		policy.TTL = policy.MaxAge
+	}
+	return policy, nil
+}
+
+// effectiveRefreshTTL makes the refresh token (and the Redis lifetime of a session key) at least as
+// long as the session lifetime, so the token never expires before the session it belongs to.
+func effectiveRefreshTTL(refreshTTL time.Duration, session domain.SessionPolicy) time.Duration {
+	if session.TTL > refreshTTL {
+		return session.TTL
+	}
+	return refreshTTL
 }

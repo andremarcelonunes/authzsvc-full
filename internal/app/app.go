@@ -251,7 +251,7 @@ func Run(cfg *config.Config) error {
 	phoneAuthStrategy := services.NewPhoneAuthStrategy(userRepo, passwordSvc, identifierResolver, services.WithStrategyPhoneVerificationPolicy(phoneVerification))
 
 	// Initialize auth service with validation support and unified authentication (CB-194)
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, requestValidationSvc, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy, services.WithPhoneVerificationPolicy(phoneVerification), services.WithPasswordPolicy(passwordPolicy))
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, requestValidationSvc, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy, services.WithPhoneVerificationPolicy(phoneVerification), services.WithPasswordPolicy(passwordPolicy), services.WithSessionPolicy(cfg.Session))
 
 	// Configure validation middleware
 	validationConfig := middleware.ValidationConfig{
