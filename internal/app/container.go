@@ -162,6 +162,7 @@ func (c *Container) initServices() error {
 		identifierResolver,   // CB-194: Identifier resolution service
 		emailAuthStrategy,    // CB-194: Email authentication strategy
 		phoneAuthStrategy,    // CB-194: Phone authentication strategy
+		services.WithSessionPolicy(c.Config.Session),
 	)
 
 	return nil
@@ -251,6 +252,7 @@ func (c *Container) initValidationServices() error {
 		identifierResolver,   // CB-194: Identifier resolution service
 		emailAuthStrategy,    // CB-194: Email authentication strategy
 		phoneAuthStrategy,    // CB-194: Phone authentication strategy
+		services.WithSessionPolicy(c.Config.Session),
 	)
 
 	return nil

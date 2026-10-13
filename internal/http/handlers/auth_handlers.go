@@ -513,6 +513,14 @@ func (h *AuthHandlers) Refresh(c *gin.Context) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Session expired"})
 		} else if errors.Is(err, domain.ErrUserInactive) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "User account is inactive"})
+		} else if errors.Is(err, domain.ErrConcurrentRefresh) {
+			// Another refresh of this session is running: retry the same token shortly. NOT a logout.
+			c.Header("Retry-After", "1")
+			c.JSON(http.StatusConflict, gin.H{"error": "Refresh already in progress, retry shortly"})
+		} else if errors.Is(err, domain.ErrTemporarilyUnavailable) {
+			// A dependency (Redis...) failed: retry the same token. NOT a logout.
+			c.Header("Retry-After", "2")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Token refresh temporarily unavailable, retry shortly"})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Token refresh failed"})
 		}
