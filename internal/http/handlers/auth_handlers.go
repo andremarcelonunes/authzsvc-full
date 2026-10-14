@@ -506,6 +506,8 @@ func (h *AuthHandlers) Refresh(c *gin.Context) {
 
 	result, err := h.authSvc.RefreshToken(c.Request.Context(), req.RefreshToken)
 	if err != nil {
+		// The reason (session id included, never the token) so a dropped session can be explained afterwards
+		log.Printf("REFRESH_REJECTED: ip=%s error=%v", c.ClientIP(), err)
 		// Use errors.Is for wrapped errors from CB-179 enhanced security implementation
 		if errors.Is(err, domain.ErrTokenInvalid) || errors.Is(err, domain.ErrTokenExpired) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
@@ -527,6 +529,11 @@ func (h *AuthHandlers) Refresh(c *gin.Context) {
 		return
 	}
 
+	var userID uint
+	if result.User != nil {
+		userID = result.User.ID
+	}
+	log.Printf("REFRESH_OK: user_id=%d session=%s ip=%s", userID, result.SessionID, c.ClientIP())
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
 			"access_token":  result.AccessToken,
