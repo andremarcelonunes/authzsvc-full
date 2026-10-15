@@ -646,6 +646,8 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 		}
 		// Best effort: remember the rotation so a lost response can be retried inside the grace window
 		s.rememberRotation(ctx, refreshToken, session.ID)
+		// The token is being used, so its own predecessor (if still kept) is no longer needed
+		s.retirePredecessor(ctx, refreshToken)
 	}
 
 	// Generate new access token with enhanced error context
@@ -660,6 +662,10 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 		return nil, fmt.Errorf("refresh token generation failed for user %d (session %s): %w", user.ID, session.ID, err)
 	}
 
+	if !graceUsed {
+		s.linkSuccessor(ctx, newRefreshToken, refreshToken)
+	}
+
 	return &domain.AuthResult{
 		User:         user,
 		AccessToken:  accessToken,
@@ -669,24 +675,56 @@ func (s *AuthServiceImpl) RefreshToken(ctx context.Context, refreshToken string)
 	}, nil
 }
 
+// tokenHash identifies a refresh token in Redis without storing it
+func tokenHash(token string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+}
+
 // refreshGraceKey is where the rotation of a refresh token is remembered (hash only, never the token)
 func refreshGraceKey(token string) string {
-	return fmt.Sprintf("refresh_grace:%x", sha256.Sum256([]byte(token)))
+	return "refresh_grace:" + tokenHash(token)
+}
+
+// refreshPredecessorKey links a refresh token to the one it replaced (hashes only)
+func refreshPredecessorKey(token string) string {
+	return "refresh_pred:" + tokenHash(token)
+}
+
+// linkSuccessor remembers that successor replaced token, so the first use of successor retires token.
+// Only with RefreshUntilSuccessor; best effort (without it the old token lives until the grace TTL).
+func (s *AuthServiceImpl) linkSuccessor(ctx context.Context, successor, token string) {
+	if !s.sessionPolicy.RefreshUntilSuccessor || s.redisClient == nil {
+		return
+	}
+	_ = s.redisClient.Set(ctx, refreshPredecessorKey(successor), tokenHash(token), s.sessionPolicy.GraceTTL()).Err()
+}
+
+// retirePredecessor ends the extra use of the token that token replaced: its successor reached us.
+func (s *AuthServiceImpl) retirePredecessor(ctx context.Context, token string) {
+	if !s.sessionPolicy.RefreshUntilSuccessor || s.redisClient == nil {
+		return
+	}
+	predKey := refreshPredecessorKey(token)
+	pred, err := s.redisClient.Get(ctx, predKey).Result()
+	if err != nil {
+		return
+	}
+	_ = s.redisClient.Del(ctx, "refresh_grace:"+pred, predKey).Err()
 }
 
 // rememberRotation records, for the grace window, that token was just rotated within sessionID.
 // Best effort: without it the token is simply refused (strict), which is the safe direction.
 func (s *AuthServiceImpl) rememberRotation(ctx context.Context, token, sessionID string) {
-	if s.sessionPolicy.RefreshGrace <= 0 || s.redisClient == nil {
+	if s.sessionPolicy.GraceTTL() <= 0 || s.redisClient == nil {
 		return
 	}
-	_ = s.redisClient.Set(ctx, refreshGraceKey(token), sessionID, s.sessionPolicy.RefreshGrace).Err()
+	_ = s.redisClient.Set(ctx, refreshGraceKey(token), sessionID, s.sessionPolicy.GraceTTL()).Err()
 }
 
 // refreshGraceGranted reports whether a blacklisted token may still be used because it was rotated
 // within the grace window by the very session it claims.
 func (s *AuthServiceImpl) refreshGraceGranted(ctx context.Context, token, sessionID string) (bool, error) {
-	if s.sessionPolicy.RefreshGrace <= 0 || s.redisClient == nil {
+	if s.sessionPolicy.GraceTTL() <= 0 || s.redisClient == nil {
 		return false, nil
 	}
 	owner, err := s.redisClient.Get(ctx, refreshGraceKey(token)).Result()

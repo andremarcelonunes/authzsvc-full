@@ -64,3 +64,20 @@ func TestEffectiveRefreshTTL_RefreshTokenNeverExpiresBeforeTheSession(t *testing
 		t.Errorf("longer session raises the refresh lifetime to match, got %v", got)
 	}
 }
+
+func TestLoadSessionConfig_RefreshUntilSuccessor(t *testing.T) {
+	t.Setenv("REFRESH_UNTIL_SUCCESSOR", "")
+	got, err := loadSessionConfig(SessionFileConfig{})
+	if err != nil || got.RefreshUntilSuccessor {
+		t.Fatalf("default must be off: %+v %v", got, err)
+	}
+	t.Setenv("REFRESH_UNTIL_SUCCESSOR", "true")
+	got, err = loadSessionConfig(SessionFileConfig{})
+	if err != nil || !got.RefreshUntilSuccessor {
+		t.Fatalf("true must turn it on: %+v %v", got, err)
+	}
+	t.Setenv("REFRESH_UNTIL_SUCCESSOR", "talvez")
+	if _, err := loadSessionConfig(SessionFileConfig{}); err == nil {
+		t.Fatal("garbage must be an error")
+	}
+}

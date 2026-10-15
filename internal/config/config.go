@@ -827,6 +827,13 @@ func loadSessionConfig(fromFile SessionFileConfig) (domain.SessionPolicy, error)
 		}
 		*in.dst = d
 	}
+	if raw := env("REFRESH_UNTIL_SUCCESSOR", ""); raw != "" {
+		on, err := strconv.ParseBool(raw)
+		if err != nil {
+			return policy, fmt.Errorf("invalid REFRESH_UNTIL_SUCCESSOR %q: expected true or false", raw)
+		}
+		policy.RefreshUntilSuccessor = on
+	}
 	if policy.RefreshGrace > MaxRefreshGrace {
 		return policy, fmt.Errorf("invalid REFRESH_GRACE %s: must be at most %s", policy.RefreshGrace, MaxRefreshGrace)
 	}
