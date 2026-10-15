@@ -405,3 +405,73 @@ func TestRefresh_ExtendTTLFailureIsRetryable(t *testing.T) {
 	}
 	_ = session
 }
+
+// --- RefreshUntilSuccessor: the rotated token lives until its successor is used ---
+
+func untilSuccessor() domain.SessionPolicy {
+	return domain.SessionPolicy{TTL: 2160 * time.Hour, RefreshUntilSuccessor: true}
+}
+
+func TestRefresh_UntilSuccessorAcceptsTheOldTokenLongAfterALostAnswer(t *testing.T) {
+	h := newSessionHarness(t, untilSuccessor(), 2160*time.Hour)
+	session, token := h.newSession(0, 2160*time.Hour)
+	h.mustRefresh(token) // the app froze: the new pair was never stored
+
+	h.mr.FastForward(40 * time.Minute) // far beyond any short grace window
+
+	again, err := h.refresh(token)
+	if err != nil {
+		t.Fatalf("the old token must still be accepted while its successor was never used: %v", err)
+	}
+	if again.SessionID != session.ID {
+		t.Fatalf("same session expected, got %s", again.SessionID)
+	}
+	h.mustRefresh(again.RefreshToken)
+}
+
+func TestRefresh_UntilSuccessorAcceptsTheOldTokenOnlyOnce(t *testing.T) {
+	h := newSessionHarness(t, untilSuccessor(), 2160*time.Hour)
+	_, token := h.newSession(0, 2160*time.Hour)
+	h.mustRefresh(token)
+	h.mustRefresh(token) // the one extra use
+
+	if _, err := h.refresh(token); !errors.Is(err, domain.ErrTokenInvalid) {
+		t.Errorf("a second extra use must be refused, got %v", err)
+	}
+}
+
+func TestRefresh_UntilSuccessorUsingTheSuccessorRetiresTheOldToken(t *testing.T) {
+	h := newSessionHarness(t, untilSuccessor(), 2160*time.Hour)
+	_, token := h.newSession(0, 2160*time.Hour)
+	next := h.mustRefresh(token).RefreshToken
+
+	h.mustRefresh(next) // the app did store the new token and used it
+
+	if _, err := h.refresh(token); !errors.Is(err, domain.ErrTokenInvalid) {
+		t.Errorf("once the successor was used the old token must die, got %v", err)
+	}
+}
+
+func TestRefresh_UntilSuccessorStillBoundToTheSession(t *testing.T) {
+	h := newSessionHarness(t, untilSuccessor(), 2160*time.Hour)
+	session, token := h.newSession(0, 2160*time.Hour)
+	h.mustRefresh(token)
+
+	if err := h.svc.Logout(context.Background(), session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.refresh(token); !errors.Is(err, domain.ErrSessionNotFound) {
+		t.Errorf("logout still kills the old token, got %v", err)
+	}
+}
+
+func TestRefresh_UntilSuccessorOffKeepsTheShortWindow(t *testing.T) {
+	h := newSessionHarness(t, domain.SessionPolicy{RefreshGrace: 30 * time.Second}, 168*time.Hour)
+	_, token := h.newSession(0, 24*time.Hour)
+	h.mustRefresh(token)
+	h.mr.FastForward(40 * time.Minute)
+
+	if _, err := h.refresh(token); !errors.Is(err, domain.ErrTokenInvalid) {
+		t.Errorf("default (switch off) keeps the strict window, got %v", err)
+	}
+}

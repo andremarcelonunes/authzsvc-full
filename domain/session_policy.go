@@ -27,6 +27,18 @@ type SessionPolicy struct {
 	// RefreshGrace, when > 0, lets the refresh token that was just rotated be presented once more
 	// within this window (a lost response must not log the person out). 0 = strict one-time use.
 	RefreshGrace time.Duration
+	// RefreshUntilSuccessor, when true, keeps the rotated refresh token usable once more (same session)
+	// until its successor is first used, bounded by the refresh lifetime, instead of the RefreshGrace
+	// window: an app frozen right after a refresh (new token never stored) must not log the person out.
+	RefreshUntilSuccessor bool
+}
+
+// GraceTTL is how long a just-rotated refresh token may still be presented once; 0 = strict one-time use
+func (p SessionPolicy) GraceTTL() time.Duration {
+	if p.RefreshUntilSuccessor {
+		return p.RefreshTTL()
+	}
+	return p.RefreshGrace
 }
 
 // LoginTTL is the lifetime of a session created at login
