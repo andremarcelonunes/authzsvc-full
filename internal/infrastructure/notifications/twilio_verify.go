@@ -107,13 +107,24 @@ func (v *TwilioVerify) StartVerification(ctx context.Context, phone string) erro
 		return nil
 	}
 	log.Printf("TWILIO_VERIFY_START_REFUSED: phone=%s http=%d twilio_code=%d", maskPhone(phone), status, body.Code)
+	// A 4xx answer means Twilio created no verification, so no SMS exists: the budget reservation is
+	// given back (ErrSMSNotSent). Otherwise failed sends (for instance every send while the account had no
+	// sender) used up the per-phone caps of people who never received anything. A 5xx or a transport
+	// error may have sent one, so the reservation stays consumed.
+	refused := status >= 400 && status < 500
+	var cause error
 	switch body.Code {
 	case verifyErrInvalidParameter:
-		return domain.ErrSMSInvalidPhone
+		cause = domain.ErrSMSInvalidPhone
 	case verifyErrMaxSendAttempts:
-		return &domain.SMSLimitError{Kind: domain.SMSLimitPhoneInterval, RetryAfter: verifySendWindow}
+		cause = &domain.SMSLimitError{Kind: domain.SMSLimitPhoneInterval, RetryAfter: verifySendWindow}
+	default:
+		cause = fmt.Errorf("twilio verify start refused (http %d, code %d)", status, body.Code)
 	}
-	return fmt.Errorf("twilio verify start refused (http %d, code %d)", status, body.Code)
+	if refused {
+		return fmt.Errorf("%w: %w", cause, domain.ErrSMSNotSent)
+	}
+	return cause
 }
 
 // CheckVerification checks code for phone: approved is true only for status "approved".
