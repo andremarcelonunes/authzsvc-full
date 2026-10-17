@@ -231,3 +231,35 @@ func TestWithTwilioVerifyIfConfigured(t *testing.T) {
 		t.Error("all set: Verify on")
 	}
 }
+
+// Regression (staging 2026-10-17): sends Twilio refused used to consume the per-phone caps, so a person
+// whose earlier attempts all failed (no sender, error 21659) was refused with sms_limit and never got a
+// code. A refusal by Twilio (4xx) gives the reservation back; a 5xx may have sent, so it stays consumed.
+func TestNotifierVerify_TwilioRefusalGivesTheReservationBack(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   int
+		body     string
+		released int
+	}{
+		{"4xx refusal", 400, `{"code":21659}`, 1},
+		{"60203", 429, `{"code":60203}`, 1},
+		{"60200", 400, `{"code":60200}`, 1},
+		{"5xx may have sent", 503, `{"code":20503}`, 0},
+	}
+	for _, c := range cases {
+		_, v := newVerifyFake(t, c.status, c.body)
+		budget := &fakeBudget{}
+		n := NewBudgetedNotifier(&fakeProvider{}, budget, WithPhoneCodeVerifier(v))
+		err := n.StartVerification(context.Background(), "+5511999990000")
+		if err == nil || budget.released != c.released || budget.sent != 0 {
+			t.Errorf("%s: err=%v budget=%+v", c.name, err, budget)
+		}
+	}
+	// the mapped errors survive the wrapping
+	_, v := newVerifyFake(t, 429, `{"code":60203}`)
+	var limit *domain.SMSLimitError
+	if err := v.StartVerification(context.Background(), "+5511999990000"); !errors.As(err, &limit) {
+		t.Errorf("limit lost: %v", err)
+	}
+}

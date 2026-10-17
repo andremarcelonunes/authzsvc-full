@@ -20,6 +20,8 @@ const PhoneNotMobileMessage = "Use um número de celular"
 // ValidateMobilePhone refuses a Brazilian (+55) number that is not a mobile: it needs 11 digits after
 // +55 and the third digit (the first after the area code) must be 9. Numbers of other countries pass.
 func ValidateMobilePhone(phone string) error {
+	// Formatting characters a client may leave in (spaces, hyphens, parentheses) are not digits of the number.
+	phone = strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(phone)
 	national, ok := strings.CutPrefix(phone, "+55")
 	if !ok {
 		return nil
