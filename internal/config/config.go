@@ -68,6 +68,8 @@ type TwilioConfig struct {
 	AccountSID string `yaml:"account_sid"`
 	AuthToken  string `yaml:"auth_token"`
 	FromNumber string `yaml:"from_number"`
+	// VerifyServiceSID (TWILIO_VERIFY_SERVICE_SID): when set with the account credentials, codes go through Twilio Verify.
+	VerifyServiceSID string `yaml:"verify_service_sid"`
 }
 
 type CasbinConfig struct {
@@ -247,6 +249,8 @@ type Config struct {
 	TwilioSID        string
 	TwilioToken      string
 	TwilioFrom       string
+	// TwilioVerifyServiceSID: Twilio Verify Service (VA...). Empty = codes are sent as direct SMS from TwilioFrom.
+	TwilioVerifyServiceSID string
 	CasbinModelPath  string
 	OwnershipRules   []OwnershipRule
 	ValidationRules  []ValidationRule // New field for enhanced validation rules
@@ -434,6 +438,7 @@ func Load() (*Config, error) {
 		TwilioSID:        configFile.Twilio.AccountSID,
 		TwilioToken:      configFile.Twilio.AuthToken,
 		TwilioFrom:       configFile.Twilio.FromNumber,
+		TwilioVerifyServiceSID: env("TWILIO_VERIFY_SERVICE_SID", configFile.Twilio.VerifyServiceSID),
 		CasbinModelPath:  configFile.Casbin.ModelPath,
 		OwnershipRules:   ownershipRules,
 		ValidationRules:  validationRules,

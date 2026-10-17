@@ -19,6 +19,7 @@ type AuthServiceImpl struct {
 	passwordSvc     domain.PasswordService
 	tokenSvc        domain.TokenService
 	otpSvc          domain.OTPService
+	phoneCodePreflight func(phone string) error
 	policySvc       domain.PolicyService
 	redisClient     *redis.Client
 	
@@ -67,6 +68,12 @@ func WithPhoneVerificationPolicy(policy domain.PhoneVerificationPolicy) AuthServ
 			s.phoneVerification = policy
 		}
 	}
+}
+
+// WithPhoneCodePreflight sets a check run before the account is created, when registration sends a
+// code: a phone that could never be sent one (not a mobile) is refused without leaving a user behind.
+func WithPhoneCodePreflight(check func(phone string) error) AuthServiceOption {
+	return func(s *AuthServiceImpl) { s.phoneCodePreflight = check }
 }
 
 // NewAuthService creates a new auth service
@@ -175,6 +182,15 @@ func (s *AuthServiceImpl) createUserAccount(ctx context.Context, endpoint string
 				}
 			}
 			return nil, domain.ErrValidationFailed
+		}
+	}
+
+	if s.phoneCodePreflight != nil && s.phoneVerification.RequiresPhoneVerification() {
+		if err := s.phoneCodePreflight(phone); err != nil {
+			if errors.Is(err, domain.ErrPhoneNotMobile) {
+				return nil, &domain.RegistrationValidationError{Code: "PHONE_FORMAT_INVALID", Field: "phone", Message: domain.PhoneNotMobileMessage}
+			}
+			return nil, err
 		}
 	}
 

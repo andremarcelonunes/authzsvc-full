@@ -125,6 +125,7 @@ func (c *Container) initServices() error {
 		),
 		smsbudget.NewRedisBudget(c.RedisClient, c.Config.SMSBudget, c.Config.JWTSecret),
 		notifications.WithTestPhonePrefixes(c.Config.SMSTestPhonePrefixes, c.Config.OTPLogCodes),
+		notifications.WithTwilioVerifyIfConfigured(c.Config.TwilioSID, c.Config.TwilioToken, c.Config.TwilioVerifyServiceSID),
 	)
 
 	// Initialize audit service (CB-183)
@@ -163,6 +164,7 @@ func (c *Container) initServices() error {
 		emailAuthStrategy,    // CB-194: Email authentication strategy
 		phoneAuthStrategy,    // CB-194: Phone authentication strategy
 		services.WithSessionPolicy(c.Config.Session),
+		services.WithPhoneCodePreflight(c.phoneCodePreflight),
 	)
 
 	return nil
@@ -253,6 +255,7 @@ func (c *Container) initValidationServices() error {
 		emailAuthStrategy,    // CB-194: Email authentication strategy
 		phoneAuthStrategy,    // CB-194: Phone authentication strategy
 		services.WithSessionPolicy(c.Config.Session),
+		services.WithPhoneCodePreflight(c.phoneCodePreflight),
 	)
 
 	return nil
@@ -272,5 +275,12 @@ func (c *Container) Close() error {
 		return sqlDB.Close()
 	}
 
+	return nil
+}
+// phoneCodePreflight refuses, before an account is created, a phone that could not be sent a code.
+func (c *Container) phoneCodePreflight(phone string) error {
+	if pc, ok := c.NotificationSvc.(interface{ CheckPhone(string) error }); ok {
+		return pc.CheckPhone(phone)
+	}
 	return nil
 }

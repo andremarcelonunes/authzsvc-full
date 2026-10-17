@@ -888,7 +888,7 @@ func (s *PasswordChangeService) generateAndSendOTPFor(ctx context.Context, purpo
 	if err != nil {
 		return "", err
 	}
-	if otpRequest.AlreadySent {
+	if otpRequest.AlreadySent || otpRequest.Code == "" { // no code of ours: the provider checks it
 		return otpViaService, nil
 	}
 	return otpRequest.Code, nil

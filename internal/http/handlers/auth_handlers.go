@@ -175,6 +175,9 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 		if respondRegistrationValidationError(c, err) {
 			return
 		}
+		if respondPhoneCodeError(c, err) {
+			return
+		}
 		if respondSMSError(c, err) {
 			// The user row was already created and is kept; the client retries /auth/otp/send later.
 			return
@@ -437,6 +440,20 @@ func getLogSafeIdentifier(req LoginRequest) string {
 	return "unknown"
 }
 
+// respondPhoneCodeError answers the errors of a code that could not be started because of the phone:
+// the same 400 shape as a registration validation error (error, code, field).
+func respondPhoneCodeError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, domain.ErrPhoneNotMobile):
+		c.JSON(http.StatusBadRequest, gin.H{"error": domain.PhoneNotMobileMessage, "code": "PHONE_FORMAT_INVALID", "field": "phone"})
+		return true
+	case errors.Is(err, domain.ErrSMSInvalidPhone):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Phone number format is invalid", "code": "PHONE_FORMAT_INVALID", "field": "phone"})
+		return true
+	}
+	return false
+}
+
 // otpResendThrottledMessage is the client-facing message for domain.ErrOTPResendThrottled (HTTP 429).
 const otpResendThrottledMessage = "Please wait before requesting a new verification code"
 
@@ -478,6 +495,9 @@ func (h *AuthHandlers) SendOTP(c *gin.Context) {
 	ctx := domain.WithClientIP(c.Request.Context(), c.ClientIP())
 	_, err = h.otpSvc.Generate(ctx, req.Phone, req.UserID)
 	if err != nil {
+		if respondPhoneCodeError(c, err) {
+			return
+		}
 		if respondSMSError(c, err) {
 			return
 		}
