@@ -62,7 +62,8 @@ func Run(cfg *config.Config) error {
 	notificationSvc := notifications.NewBudgetedNotifier(
 		notifications.NewTwilioService(cfg.TwilioSID, cfg.TwilioToken, cfg.TwilioFrom, notifications.WithLogMessages(cfg.OTPLogCodes)),
 		smsBudget,
-		notifications.WithTestPhonePrefixes(cfg.SMSTestPhonePrefixes, cfg.OTPLogCodes))
+		notifications.WithTestPhonePrefixes(cfg.SMSTestPhonePrefixes, cfg.OTPLogCodes),
+		notifications.WithTwilioVerifyIfConfigured(cfg.TwilioSID, cfg.TwilioToken, cfg.TwilioVerifyServiceSID))
 	if n := len(cfg.SMSTestPhonePrefixes); n > 0 {
 		log.Printf("WARNING: %d SMS test phone prefix(es) configured (SMS_TEST_PHONE_PREFIXES): numbers with these prefixes never reach the SMS provider. This must be empty in production.", n)
 	}
@@ -251,7 +252,7 @@ func Run(cfg *config.Config) error {
 	phoneAuthStrategy := services.NewPhoneAuthStrategy(userRepo, passwordSvc, identifierResolver, services.WithStrategyPhoneVerificationPolicy(phoneVerification))
 
 	// Initialize auth service with validation support and unified authentication (CB-194)
-	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, requestValidationSvc, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy, services.WithPhoneVerificationPolicy(phoneVerification), services.WithPasswordPolicy(passwordPolicy), services.WithSessionPolicy(cfg.Session))
+	authSvc := services.NewAuthService(userRepo, sessionRepo, passwordSvc, tokenSvc, otpSvc, policySvc, rdb, requestValidationSvc, auditSvc, identifierResolver, emailAuthStrategy, phoneAuthStrategy, services.WithPhoneVerificationPolicy(phoneVerification), services.WithPasswordPolicy(passwordPolicy), services.WithSessionPolicy(cfg.Session), services.WithPhoneCodePreflight(notificationSvc.CheckPhone))
 
 	// Configure validation middleware
 	validationConfig := middleware.ValidationConfig{

@@ -64,6 +64,30 @@ type smsSender interface {
 	SendSMSContext(ctx context.Context, to, message string) error
 }
 
+// providerVerifier is implemented by the budgeted notifier when codes go through a provider that
+// generates and checks them (Twilio Verify).
+type providerVerifier interface {
+	UsesProviderVerification(phone string) bool
+	StartVerification(ctx context.Context, phone string) error
+	CheckVerification(ctx context.Context, phone, code string) (bool, error)
+}
+
+// phoneChecker refuses a phone that must not be sent a code (not a mobile) before anything is sent.
+type phoneChecker interface {
+	CheckPhone(phone string) error
+}
+
+// verifyPendingMarker is stored under the OTP key while the provider holds the code. It is not a
+// digest and a typed code is never compared with it.
+const verifyPendingMarker = "provider-verify"
+
+func (s *OTPServiceImpl) providerFor(phone string) (providerVerifier, bool) {
+	if pv, ok := s.notificationSvc.(providerVerifier); ok && pv.UsesProviderVerification(phone) {
+		return pv, true
+	}
+	return nil, false
+}
+
 func (s *OTPServiceImpl) sendSMS(ctx context.Context, to, message string) error {
 	if sender, ok := s.notificationSvc.(smsSender); ok {
 		return sender.SendSMSContext(ctx, to, message)
@@ -99,6 +123,11 @@ func OTPMessage(brand string, purpose domain.OTPPurpose, code string, ttl time.D
 // and every cap allows another SMS. The code is stored only after the SMS was accepted, so a
 // refused resend never destroys the valid code.
 func (s *OTPServiceImpl) Generate(ctx context.Context, phone string, userID uint) (*domain.OTPRequest, error) {
+	if pc, ok := s.notificationSvc.(phoneChecker); ok {
+		if err := pc.CheckPhone(phone); err != nil {
+			return nil, err
+		}
+	}
 	otpKey := fmt.Sprintf("otp:%s:%d", phone, userID)
 	resendKey := fmt.Sprintf("otp:res:%s", phone)
 	attemptsKey := fmt.Sprintf("otp:att:%s:%d", phone, userID)
@@ -116,15 +145,23 @@ func (s *OTPServiceImpl) Generate(ctx context.Context, phone string, userID uint
 		return nil, &otpResendThrottledError{waitSeconds: waitTime}
 	}
 
-	// Generate secure OTP code
-	code, err := s.generateSecureCode()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate OTP code: %w", err)
+	// With the provider (Twilio Verify) it generates, sends and checks the code: nothing is generated
+	// or kept here except a marker that carries the same expiry, attempts and resend rules.
+	provider, viaProvider := s.providerFor(phone)
+	code := ""
+	var sendErr error
+	if viaProvider {
+		sendErr = provider.StartVerification(ctx, phone)
+	} else {
+		var err error
+		code, err = s.generateSecureCode()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate OTP code: %w", err)
+		}
+		// Send SMS notification (the budget is consulted inside the notifier)
+		sendErr = s.sendSMS(ctx, phone, OTPMessage(s.config.Brand, domain.OTPPurposeFrom(ctx), code, s.config.TTL))
 	}
-
-	// Send SMS notification (the budget is consulted inside the notifier)
-	message := OTPMessage(s.config.Brand, domain.OTPPurposeFrom(ctx), code, s.config.TTL)
-	if err := s.sendSMS(ctx, phone, message); err != nil {
+	if err := sendErr; err != nil {
 		var limit *domain.SMSLimitError
 		if validCodeOut == 1 && (errors.As(err, &limit) || errors.Is(err, domain.ErrSMSUnavailable)) {
 			log.Printf("OTP resend for user %d not sent, valid code still out: %v", userID, err)
@@ -134,7 +171,11 @@ func (s *OTPServiceImpl) Generate(ctx context.Context, phone string, userID uint
 	}
 
 	// Store only the digest, reset attempts, start the resend window
-	if err := s.redisClient.Set(ctx, otpKey, s.digester.Digest(otpKey, code), s.config.TTL).Err(); err != nil {
+	stored := verifyPendingMarker
+	if !viaProvider {
+		stored = s.digester.Digest(otpKey, code)
+	}
+	if err := s.redisClient.Set(ctx, otpKey, stored, s.config.TTL).Err(); err != nil {
 		return nil, fmt.Errorf("failed to store OTP in Redis: %w", err)
 	}
 	if err := s.redisClient.Set(ctx, attemptsKey, 0, s.config.TTL).Err(); err != nil {
@@ -201,6 +242,10 @@ func (s *OTPServiceImpl) VerifyKeep(ctx context.Context, phone, code string, use
 		return false, fmt.Errorf("failed to get OTP from Redis: %w", err)
 	}
 
+	if storedCode == verifyPendingMarker {
+		return s.checkWithProvider(ctx, otpKey, attemptsKey, phone, code)
+	}
+
 	// Verify code
 	if !otpMatches(s.digester, storedCode, otpKey, code) {
 		return false, domain.ErrOTPInvalid
@@ -246,4 +291,44 @@ func (s *OTPServiceImpl) generateSecureCode() (string, error) {
 	}
 
 	return string(digits), nil
+}
+
+// checkWithProvider asks the provider to check code. Our attempts counter and expiry already ran. An
+// approved code is remembered as a digest (same expiry) so a flow that keeps the code can check it
+// again without asking the provider, which accepts a code only once.
+func (s *OTPServiceImpl) checkWithProvider(ctx context.Context, otpKey, attemptsKey, phone, code string) (bool, error) {
+	provider, ok := s.providerFor(phone)
+	if !ok {
+		return false, domain.ErrOTPNotFound
+	}
+	if !isDigits(code) || len(code) < 4 || len(code) > 10 {
+		return false, domain.ErrOTPInvalid
+	}
+	approved, err := provider.CheckVerification(ctx, phone, code)
+	if err != nil {
+		if errors.Is(err, domain.ErrOTPMaxAttempts) || errors.Is(err, domain.ErrOTPExpired) {
+			s.redisClient.Del(ctx, otpKey, attemptsKey)
+			return false, err
+		}
+		if errors.Is(err, domain.ErrOTPInvalid) {
+			return false, err
+		}
+		return false, fmt.Errorf("failed to check OTP with provider: %w", err)
+	}
+	if !approved {
+		return false, domain.ErrOTPInvalid
+	}
+	if err := s.redisClient.Set(ctx, otpKey, s.digester.Digest(otpKey, code), redis.KeepTTL).Err(); err != nil {
+		log.Printf("Warning: failed to remember an approved code: %v", err)
+	}
+	return true, nil
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
